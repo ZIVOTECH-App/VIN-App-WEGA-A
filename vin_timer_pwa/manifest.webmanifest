@@ -1,0 +1,1 @@
+{"name":"VIN Timer","short_name":"VIN Timer","description":"40-minutowy timer dla pojazdów identyfikowanych numerem VIN","start_url":"./index.html","display":"standalone","background_color":"#f3f6fb","theme_color":"#1d4ed8","lang":"pl","icons":[{"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]}

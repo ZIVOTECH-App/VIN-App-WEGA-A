@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userRole() {
+      return get(
+        /databases/$(database)/documents/users/$(request.auth.uid)
+      ).data.role;
+    }
+
+    function isEmployee() {
+      return signedIn() && userRole() == 'employee';
+    }
+
+    function isAdmin() {
+      return signedIn() && userRole() == 'admin';
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow create, update, delete: if false;
+
+      match /devices/{deviceId} {
+        allow read, write: if signedIn() && request.auth.uid == userId;
+      }
+    }
+
+    match /activeVehicles/{vehicleId} {
+      allow read: if signedIn();
+      allow create: if isEmployee() || isAdmin();
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).changedKeys()
+          .hasOnly(['finishedAt', 'finishedBy']);
+      allow delete: if isEmployee() || isAdmin();
+    }
+
+    match /history/{historyId} {
+      allow read: if isAdmin();
+      allow create: if (isEmployee() || isAdmin())
+        && request.resource.data.keys().hasOnly([
+          'vin',
+          'position',
+          'vinSearch',
+          'positionSearch',
+          'startedAt',
+          'endedAt',
+          'createdBy',
+          'finishedBy',
+          'durationMinutes',
+          'actualDurationSeconds',
+          'overtimeSeconds',
+          'status',
+        ]);
+      allow update, delete: if false;
+    }
+  }
+}

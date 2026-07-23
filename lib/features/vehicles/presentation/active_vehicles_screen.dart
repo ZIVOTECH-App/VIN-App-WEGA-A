@@ -15,6 +15,7 @@ class ActiveVehiclesScreen extends StatefulWidget {
 
 class _ActiveVehiclesScreenState extends State<ActiveVehiclesScreen> {
   final _searchController = TextEditingController();
+  final Set<String> _finishingVehicleIds = <String>{};
   Timer? _refreshTimer;
   String _query = '';
 
@@ -48,6 +49,84 @@ class _ActiveVehiclesScreenState extends State<ActiveVehiclesScreen> {
     );
   }
 
+  Future<void> _finishVehicle(
+    QueryDocumentSnapshot<Map<String, dynamic>> vehicle,
+  ) async {
+    if (_finishingVehicleIds.contains(vehicle.id)) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _showMessage('Sesja wygasła. Zaloguj się ponownie.');
+      return;
+    }
+
+    setState(() => _finishingVehicleIds.add(vehicle.id));
+
+    final firestore = FirebaseFirestore.instance;
+    final activeRef = firestore.collection('activeVehicles').doc(vehicle.id);
+    final historyRef = firestore.collection('history').doc();
+
+    try {
+      await firestore.runTransaction((transaction) async {
+        final activeSnapshot = await transaction.get(activeRef);
+        if (!activeSnapshot.exists) {
+          throw StateError('vehicle-not-found');
+        }
+
+        final data = activeSnapshot.data()!;
+        final startedTimestamp = data['startedAt'] as Timestamp?;
+        if (startedTimestamp == null) {
+          throw StateError('missing-start-time');
+        }
+
+        final startedAt = startedTimestamp.toDate();
+        final endedAt = DateTime.now();
+        final duration = endedAt.difference(startedAt);
+        final durationSeconds = duration.isNegative ? 0 : duration.inSeconds;
+        final limitMinutes = data['limitMinutes'] as int? ?? 40;
+
+        transaction.set(historyRef, {
+          ...data,
+          'activeVehicleId': activeSnapshot.id,
+          'startedAt': startedTimestamp,
+          'endedAt': Timestamp.fromDate(endedAt),
+          'durationSeconds': durationSeconds,
+          'durationMinutes': durationSeconds ~/ 60,
+          'onTime': durationSeconds <= limitMinutes * 60,
+          'status': 'completed',
+          'endedBy': user.uid,
+        });
+        transaction.delete(activeRef);
+      });
+
+      if (mounted) {
+        _showMessage('Pojazd został zakończony i przeniesiony do historii.');
+      }
+    } on StateError catch (error) {
+      if (!mounted) return;
+      final message = switch (error.message) {
+        'vehicle-not-found' => 'Pojazd nie jest już aktywny.',
+        'missing-start-time' => 'Brakuje czasu rozpoczęcia pojazdu.',
+        _ => 'Nie udało się zakończyć pojazdu.',
+      };
+      _showMessage(message);
+    } on FirebaseException {
+      if (mounted) {
+        _showMessage('Nie udało się zakończyć pojazdu. Sprawdź uprawnienia.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _finishingVehicleIds.remove(vehicle.id));
+      }
+    }
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
   @override
   Widget build(BuildContext context) {
     final vehiclesStream = FirebaseFirestore.instance
@@ -71,7 +150,7 @@ class _ActiveVehiclesScreenState extends State<ActiveVehiclesScreen> {
           stream: vehiclesStream,
           builder: (context, snapshot) {
             if (snapshot.hasError) {
-              return _MessageView(
+              return const _MessageView(
                 icon: Icons.error_outline,
                 title: 'Nie udało się pobrać pojazdów',
                 message: 'Sprawdź połączenie i uprawnienia Firestore.',
@@ -138,7 +217,11 @@ class _ActiveVehiclesScreenState extends State<ActiveVehiclesScreen> {
                   )
                 else
                   ...filteredVehicles.map(
-                    (document) => _VehicleCard(data: document.data()),
+                    (document) => _VehicleCard(
+                      vehicle: document,
+                      isFinishing: _finishingVehicleIds.contains(document.id),
+                      onFinish: () => _finishVehicle(document),
+                    ),
                   ),
               ],
             );
@@ -155,12 +238,19 @@ class _ActiveVehiclesScreenState extends State<ActiveVehiclesScreen> {
 }
 
 class _VehicleCard extends StatelessWidget {
-  const _VehicleCard({required this.data});
+  const _VehicleCard({
+    required this.vehicle,
+    required this.isFinishing,
+    required this.onFinish,
+  });
 
-  final Map<String, dynamic> data;
+  final QueryDocumentSnapshot<Map<String, dynamic>> vehicle;
+  final bool isFinishing;
+  final VoidCallback onFinish;
 
   @override
   Widget build(BuildContext context) {
+    final data = vehicle.data();
     final vin = data['vin'] as String? ?? 'Brak VIN';
     final position = data['position'] as String? ?? 'Brak pozycji';
     final timestamp = data['startedAt'] as Timestamp?;
@@ -227,6 +317,24 @@ class _VehicleCard extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: isFinishing ? null : onFinish,
+                icon: isFinishing
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.check_circle_outline),
+                label: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Text(isFinishing ? 'Kończenie...' : 'Zakończ'),
+                ),
+              ),
             ),
           ],
         ),

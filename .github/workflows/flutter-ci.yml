@@ -33,7 +33,13 @@ jobs:
         run: flutter analyze
 
       - name: Testy
-        run: flutter test
+        shell: bash
+        run: |
+          if [ -d test ] && find test -type f -name '*_test.dart' -print -quit | grep -q .; then
+            flutter test
+          else
+            echo 'Brak testów Flutter - pomijam krok.'
+          fi
 
       - name: Zbuduj APK
         run: flutter build apk --debug

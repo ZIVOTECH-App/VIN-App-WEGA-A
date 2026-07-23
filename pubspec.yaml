@@ -16,12 +16,14 @@ dependencies:
   excel: ^4.0.6
   path_provider: ^2.1.5
   share_plus: ^10.1.4
-  mobile_scanner: ^6.0.2
+  camera: ^0.11.0+2
+  google_mlkit_barcode_scanning: ^0.12.0
   google_mlkit_text_recognition: ^0.13.1
   flutter_local_notifications: ^17.2.4
   shared_preferences: ^2.3.3
   connectivity_plus: ^6.1.0
   timezone: ^0.9.4
+  flutter_timezone: ^1.0.8
 
 dev_dependencies:
   flutter_test:

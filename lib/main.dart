@@ -9,10 +9,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:timezone/data/latest.dart' as tz;
+import 'package:timezone/timezone.dart' as tz;
 
 const _chargingMinutes = 30;
 const _serviceMinutes = 40;
@@ -23,6 +26,15 @@ final FlutterLocalNotificationsPlugin _notifications =
 
 final ValueNotifier<String?> _startupMessage = ValueNotifier<String?>(null);
 final ValueNotifier<bool> _firebaseReady = ValueNotifier<bool>(false);
+
+const AndroidNotificationChannel _vehicleOperationsChannel =
+    AndroidNotificationChannel(
+  'vehicle_operations',
+  'Operacje pojazdów',
+  description: 'Powiadomienia o zakończeniu ładowania i obsługi',
+  importance: Importance.max,
+  playSound: true,
+);
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -49,15 +61,59 @@ Future<void> _initializeAppServices() async {
 }
 
 Future<void> _initializeNotifications() async {
+  tz.initializeTimeZones();
+  tz.setLocalLocation(tz.local);
   const android = AndroidInitializationSettings('@mipmap/ic_launcher');
   const ios = DarwinInitializationSettings();
   await _notifications.initialize(
     const InitializationSettings(android: android, iOS: ios),
   );
-  await _notifications
+  final androidNotifications = _notifications
       .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>()
-      ?.requestNotificationsPermission();
+          AndroidFlutterLocalNotificationsPlugin>();
+  await androidNotifications?.createNotificationChannel(_vehicleOperationsChannel);
+  await androidNotifications?.requestNotificationsPermission();
+  await androidNotifications?.requestExactAlarmsPermission();
+}
+
+Future<void> _scheduleNotification(
+  String title,
+  String body,
+  int id,
+  DateTime scheduledAt,
+) async {
+  await _notifications.zonedSchedule(
+    id,
+    title,
+    body,
+    tz.TZDateTime.from(scheduledAt, tz.local),
+    const NotificationDetails(
+      android: AndroidNotificationDetails(
+        'vehicle_operations',
+        'Operacje pojazdów',
+        channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
+        importance: Importance.max,
+        priority: Priority.high,
+        playSound: true,
+        channelShowBadge: true,
+      ),
+      iOS: DarwinNotificationDetails(presentSound: true),
+    ),
+    androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+    uiLocalNotificationDateInterpretation:
+        UILocalNotificationDateInterpretation.absoluteTime,
+  );
+}
+
+Future<void> _cancelOperationNotifications(Map<String, dynamic> operation) async {
+  await _notifications.cancel(
+    operation['warningNotificationId'] as int? ??
+        ((operation['id'] as String? ?? '').hashCode & 0x3fffffff) + 35,
+  );
+  await _notifications.cancel(
+    operation['completionNotificationId'] as int? ??
+        ((operation['id'] as String? ?? '').hashCode & 0x3fffffff) + 40,
+  );
 }
 
 Future<void> _showNotification(String title, String body, int id) async {
@@ -68,6 +124,7 @@ Future<void> _showNotification(String title, String body, int id) async {
     importance: Importance.max,
     priority: Priority.high,
     playSound: true,
+    channelShowBadge: true,
   );
   const ios = DarwinNotificationDetails(presentSound: true);
   await _notifications.show(
@@ -491,9 +548,34 @@ class _OperationScreenState extends State<OperationScreen> {
       'synced': false,
     };
     _operations.add(operation);
+    await _scheduleOperationNotifications(operation);
     await _persistOperations();
     _resetForm(message: 'Operacja rozpoczęta. Możesz dodać kolejną.');
     await _syncPending();
+  }
+
+  Future<void> _scheduleOperationNotifications(
+    Map<String, dynamic> operation,
+  ) async {
+    final type = operation['actionType'] as String;
+    final startedAt = DateTime.parse(operation['startedAt'] as String);
+    final plannedEnd = DateTime.parse(operation['plannedEndAt'] as String);
+    if (type == 'obsługa') {
+      await _scheduleNotification(
+        'Obsługa pojazdu',
+        'Pozostało 5 minut do zakończenia obsługi.',
+        _operationNotificationId(operation, 'warningNotificationId'),
+        startedAt.add(const Duration(minutes: _serviceWarningMinutes)),
+      );
+    }
+    await _scheduleNotification(
+      type == 'ładowanie' ? 'Ładowanie zakończone' : 'Obsługa zakończona',
+      type == 'ładowanie'
+          ? 'Zakończono czas ładowania. Odłącz ładowarkę.'
+          : 'Czas obsługi zakończony.',
+      _operationNotificationId(operation, 'completionNotificationId'),
+      plannedEnd,
+    );
   }
 
   Future<void> _finish(Map<String, dynamic> operation, String status) async {
@@ -504,6 +586,7 @@ class _OperationScreenState extends State<OperationScreen> {
       ..['actualDurationSeconds'] = now.difference(startedAt).inSeconds
       ..['status'] = status
       ..['updatedAt'] = now.toIso8601String();
+    await _cancelOperationNotifications(operation);
     try {
       await _firestore
           .collection('operations')
@@ -578,7 +661,7 @@ class _OperationScreenState extends State<OperationScreen> {
           FilledButton.icon(
             onPressed: _scanCode,
             icon: const Icon(Icons.qr_code_scanner),
-            label: const Text('Skanuj QR / Code 128 / GS1-128'),
+            label: const Text('Skanuj'),
           ),
           const SizedBox(height: 12),
           TextField(
@@ -674,40 +757,163 @@ class ScanResult {
   final String type;
 }
 
-class ScannerScreen extends StatelessWidget {
+class ScannerScreen extends StatefulWidget {
   const ScannerScreen({super.key});
 
-  String _type(Barcode barcode) {
+  @override
+  State<ScannerScreen> createState() => _ScannerScreenState();
+}
+
+class _ScannerScreenState extends State<ScannerScreen> {
+  final MobileScannerController _controller = MobileScannerController(
+    formats: const [BarcodeFormat.qrCode, BarcodeFormat.code128],
+    returnImage: true,
+  );
+  final TextRecognizer _textRecognizer = TextRecognizer();
+  DateTime _lastReadAt = DateTime.fromMillisecondsSinceEpoch(0);
+  String? _lastReadValue;
+  bool _isConfirming = false;
+  bool _isProcessingText = false;
+
+  static final RegExp _vinPattern = RegExp(r'[A-HJ-NPR-Z0-9]{17}');
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _textRecognizer.close();
+    super.dispose();
+  }
+
+  String _normalizeVin(String value) =>
+      value.replaceAll(RegExp(r'[\s-]+'), '').toUpperCase();
+
+  String? _extractVin(String value) {
+    final normalized = _normalizeVin(value);
+    final directMatch = _vinPattern.firstMatch(normalized);
+    if (directMatch != null) return directMatch.group(0);
+
+    final joined = value
+        .split(RegExp(r'\s+'))
+        .map(_normalizeVin)
+        .where((part) => part.isNotEmpty)
+        .join();
+    return _vinPattern.firstMatch(joined)?.group(0);
+  }
+
+  bool _isDuplicateRead(String value) {
+    final now = DateTime.now();
+    final duplicate = _lastReadValue == value &&
+        now.difference(_lastReadAt) < const Duration(seconds: 3);
+    _lastReadValue = value;
+    _lastReadAt = now;
+    return duplicate;
+  }
+
+  String _type(Barcode barcode, String value) {
     switch (barcode.format) {
       case BarcodeFormat.qrCode:
-        return 'QR';
+        return _extractVin(value) == value ? 'VIN z QR' : 'QR';
       case BarcodeFormat.code128:
-        return 'Code 128 / GS1-128 / EAN-128';
+        return _extractVin(value) == value
+            ? 'VIN z Code 128 / GS1-128 / EAN-128'
+            : 'Code 128 / GS1-128 / EAN-128';
       default:
-        return barcode.rawValue?.length == 17 ? 'VIN' : barcode.format.name;
+        return _extractVin(value) == value ? 'VIN' : barcode.format.name;
     }
+  }
+
+  Future<void> _confirmRead(String value, String type) async {
+    final normalized = _extractVin(value) ?? value.trim().toUpperCase();
+    if (normalized.isEmpty || _isDuplicateRead(normalized) || _isConfirming) {
+      return;
+    }
+    _isConfirming = true;
+    await _controller.stop();
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text('Odczytano: $normalized'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Skanuj ponownie'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Potwierdź'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (confirmed == true) {
+      Navigator.of(context).pop(ScanResult(normalized, type));
+      return;
+    }
+    _isConfirming = false;
+    _lastReadValue = null;
+    await _controller.start();
+  }
+
+  Future<void> _readText(BarcodeCapture capture) async {
+    if (_isProcessingText || _isConfirming || capture.image == null) return;
+    _isProcessingText = true;
+    try {
+      final size = MediaQuery.sizeOf(context);
+      final inputImage = InputImage.fromBytes(
+        bytes: capture.image!,
+        metadata: InputImageMetadata(
+          size: Size(size.width, size.height),
+          rotation: InputImageRotation.rotation0deg,
+          format: InputImageFormat.nv21,
+          bytesPerRow: size.width.toInt(),
+        ),
+      );
+      final text = await _textRecognizer.processImage(inputImage);
+      final vin = _extractVin(text.text);
+      if (vin != null) {
+        await _confirmRead(vin, 'VIN OCR');
+      }
+    } catch (_) {
+      // OCR frames that cannot be decoded by ML Kit are ignored; barcode scanning continues.
+    } finally {
+      _isProcessingText = false;
+    }
+  }
+
+  void _onDetect(BarcodeCapture capture) {
+    for (final barcode in capture.barcodes) {
+      final value = barcode.rawValue;
+      if (value != null && value.trim().isNotEmpty) {
+        unawaited(_confirmRead(value, _type(barcode, value)));
+        return;
+      }
+    }
+    unawaited(_readText(capture));
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('Skanowanie kodu')),
+        appBar: AppBar(title: const Text('Skanowanie')),
         body: Stack(children: [
           MobileScanner(
-            onDetect: (capture) {
-              for (final barcode in capture.barcodes) {
-                final value = barcode.rawValue;
-                if (value != null && value.trim().isNotEmpty) {
-                  Navigator.of(context).pop(ScanResult(value.trim().toUpperCase(), _type(barcode)));
-                  break;
-                }
-              }
-            },
+            controller: _controller,
+            onDetect: _onDetect,
           ),
           const Align(
             alignment: Alignment.bottomCenter,
             child: Padding(
               padding: EdgeInsets.all(16),
-              child: Card(child: Padding(padding: EdgeInsets.all(12), child: Text('Skieruj aparat na QR, VIN, Code 128 lub GS1-128.'))),
+              child: Card(
+                child: Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Text(
+                    'Skieruj aparat na QR, Code 128, GS1-128, EAN-128 albo tekst VIN.',
+                  ),
+                ),
+              ),
             ),
           ),
         ]),

@@ -4,8 +4,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'add_vehicle_screen.dart';
-
 class ActiveVehiclesScreen extends StatefulWidget {
   const ActiveVehiclesScreen({super.key});
 
@@ -24,9 +22,7 @@ class _ActiveVehiclesScreenState extends State<ActiveVehiclesScreen> {
     super.initState();
     _searchController.addListener(_onSearchChanged);
     _refreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) {
-        setState(() {});
-      }
+      if (mounted) setState(() {});
     });
   }
 
@@ -41,12 +37,6 @@ class _ActiveVehiclesScreenState extends State<ActiveVehiclesScreen> {
       ..removeListener(_onSearchChanged)
       ..dispose();
     super.dispose();
-  }
-
-  Future<void> _openAddVehicle() async {
-    await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => const AddVehicleScreen()),
-    );
   }
 
   Future<void> _finishVehicle(
@@ -172,7 +162,7 @@ class _ActiveVehiclesScreenState extends State<ActiveVehiclesScreen> {
 
             return ListView(
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+              padding: const EdgeInsets.all(16),
               children: [
                 TextField(
                   controller: _searchController,
@@ -207,7 +197,7 @@ class _ActiveVehiclesScreenState extends State<ActiveVehiclesScreen> {
                   const _MessageView(
                     icon: Icons.directions_car_outlined,
                     title: 'Brak aktywnych pojazdów',
-                    message: 'Dodaj pierwszy pojazd, aby uruchomić licznik 40 minut.',
+                    message: 'Użyj zakładki Dodaj, aby uruchomić licznik 40 minut.',
                   )
                 else if (filteredVehicles.isEmpty)
                   const _MessageView(
@@ -227,11 +217,6 @@ class _ActiveVehiclesScreenState extends State<ActiveVehiclesScreen> {
             );
           },
         ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openAddVehicle,
-        icon: const Icon(Icons.add),
-        label: const Text('Dodaj pojazd'),
       ),
     );
   }

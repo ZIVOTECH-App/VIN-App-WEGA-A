@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../features/history/presentation/history_screen.dart';
@@ -19,12 +20,18 @@ class _MainScreenState extends State<MainScreen> {
     HistoryScreen(),
   ];
 
+  static const _titles = <String>[
+    'Aktywne pojazdy',
+    'Historia pojazdów',
+  ];
+
   Future<void> _onDestinationSelected(int index) async {
     if (index == 2) {
-      await Navigator.of(context).push<bool>(
+      final added = await Navigator.of(context).push<bool>(
         MaterialPageRoute(builder: (_) => const AddVehicleScreen()),
       );
-      if (mounted) {
+
+      if (mounted && added == true) {
         setState(() => _selectedIndex = 0);
       }
       return;
@@ -33,9 +40,23 @@ class _MainScreenState extends State<MainScreen> {
     setState(() => _selectedIndex = index);
   }
 
+  Future<void> _signOut() async {
+    await FirebaseAuth.instance.signOut();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        title: Text(_titles[_selectedIndex]),
+        actions: [
+          IconButton(
+            tooltip: 'Wyloguj',
+            onPressed: _signOut,
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
       body: IndexedStack(
         index: _selectedIndex,
         children: _pages,

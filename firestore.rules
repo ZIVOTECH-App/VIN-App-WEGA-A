@@ -1,60 +1,23 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
-      return request.auth != null;
-    }
-
-    function userRole() {
-      return get(
-        /databases/$(database)/documents/users/$(request.auth.uid)
-      ).data.role;
-    }
-
-    function isEmployee() {
-      return signedIn() && userRole() == 'employee';
-    }
-
-    function isAdmin() {
-      return signedIn() && userRole() == 'admin';
-    }
+    function signedIn() { return request.auth != null; }
+    function userDoc() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function role() { return userDoc().role; }
+    function isAdmin() { return signedIn() && role() == 'admin'; }
+    function isOwner() { return signedIn() && request.resource.data.userId == request.auth.uid; }
 
     match /users/{userId} {
       allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
-      allow create, update, delete: if false;
-
-      match /devices/{deviceId} {
-        allow read, write: if signedIn() && request.auth.uid == userId;
-      }
+      allow write: if false;
+      match /devices/{deviceId} { allow read, write: if signedIn() && request.auth.uid == userId; }
     }
 
-    match /activeVehicles/{vehicleId} {
-      allow read: if signedIn();
-      allow create: if isEmployee() || isAdmin();
-      allow update: if signedIn()
-        && request.resource.data.diff(resource.data).changedKeys()
-          .hasOnly(['finishedAt', 'finishedBy']);
-      allow delete: if isEmployee() || isAdmin();
-    }
-
-    match /history/{historyId} {
-      allow read: if isAdmin();
-      allow create: if (isEmployee() || isAdmin())
-        && request.resource.data.keys().hasOnly([
-          'vin',
-          'position',
-          'vinSearch',
-          'positionSearch',
-          'startedAt',
-          'endedAt',
-          'createdBy',
-          'finishedBy',
-          'durationMinutes',
-          'actualDurationSeconds',
-          'overtimeSeconds',
-          'status',
-        ]);
-      allow update, delete: if false;
+    match /operations/{operationId} {
+      allow read: if signedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if signedIn() && isOwner();
+      allow update: if signedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow delete: if false;
     }
   }
 }

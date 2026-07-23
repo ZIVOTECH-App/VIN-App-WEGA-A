@@ -21,11 +21,31 @@ const _serviceWarningMinutes = 35;
 final FlutterLocalNotificationsPlugin _notifications =
     FlutterLocalNotificationsPlugin();
 
-void main() async {
+final ValueNotifier<String?> _startupMessage = ValueNotifier<String?>(null);
+final ValueNotifier<bool> _firebaseReady = ValueNotifier<bool>(false);
+
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  await _initializeNotifications();
   runApp(const WegaVehicleApp());
+  unawaited(_initializeAppServices());
+}
+
+Future<void> _initializeAppServices() async {
+  try {
+    await Firebase.initializeApp();
+    _firebaseReady.value = true;
+  } catch (error) {
+    _startupMessage.value =
+        'Firebase nie jest skonfigurowane. Logowanie jest chwilowo niedostępne.';
+    return;
+  }
+
+  try {
+    await _initializeNotifications();
+  } catch (error) {
+    _startupMessage.value =
+        'Nie udało się uruchomić lokalnych powiadomień. Pozostałe funkcje aplikacji są dostępne.';
+  }
 }
 
 Future<void> _initializeNotifications() async {
@@ -69,13 +89,23 @@ class WegaVehicleApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
-      home: StreamBuilder<User?>(
-        stream: FirebaseAuth.instance.authStateChanges(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      home: ValueListenableBuilder<bool>(
+        valueListenable: _firebaseReady,
+        builder: (context, firebaseReady, _) {
+          if (!firebaseReady) {
+            return const LoginScreen();
           }
-          return snapshot.hasData ? const HomeScreen() : const LoginScreen();
+          return StreamBuilder<User?>(
+            stream: FirebaseAuth.instance.authStateChanges(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Scaffold(
+                  body: Center(child: CircularProgressIndicator()),
+                );
+              }
+              return snapshot.hasData ? const HomeScreen() : const LoginScreen();
+            },
+          );
         },
       ),
     );
@@ -108,6 +138,13 @@ class _LoginScreenState extends State<LoginScreen> {
       _message = null;
     });
     try {
+      if (!_firebaseReady.value) {
+        setState(
+          () => _message = _startupMessage.value ??
+              'Trwa inicjalizacja Firebase. Spróbuj ponownie za chwilę.',
+        );
+        return;
+      }
       final login = _loginController.text.trim();
       final email = login.contains('@') ? login : '$login@wega.local';
       await FirebaseAuth.instance.signInWithEmailAndPassword(
@@ -147,6 +184,16 @@ class _LoginScreenState extends State<LoginScreen> {
             FilledButton(
               onPressed: _loading ? null : _signIn,
               child: Text(_loading ? 'Logowanie...' : 'Zaloguj'),
+            ),
+            ValueListenableBuilder<String?>(
+              valueListenable: _startupMessage,
+              builder: (context, message, _) {
+                if (message == null) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(message, textAlign: TextAlign.center),
+                );
+              },
             ),
             if (_message != null) ...[
               const SizedBox(height: 12),

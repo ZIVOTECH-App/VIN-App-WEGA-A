@@ -21,11 +21,31 @@ const _serviceWarningMinutes = 35;
 final FlutterLocalNotificationsPlugin _notifications =
     FlutterLocalNotificationsPlugin();
 
-void main() async {
+final ValueNotifier<String?> _startupMessage = ValueNotifier<String?>(null);
+final ValueNotifier<bool> _firebaseReady = ValueNotifier<bool>(false);
+
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  await _initializeNotifications();
   runApp(const WegaVehicleApp());
+  unawaited(_initializeAppServices());
+}
+
+Future<void> _initializeAppServices() async {
+  try {
+    await Firebase.initializeApp();
+    _firebaseReady.value = true;
+  } catch (error) {
+    _startupMessage.value =
+        'Firebase nie jest skonfigurowane. Logowanie jest chwilowo niedostępne.';
+    return;
+  }
+
+  try {
+    await _initializeNotifications();
+  } catch (error) {
+    _startupMessage.value =
+        'Nie udało się uruchomić lokalnych powiadomień. Pozostałe funkcje aplikacji są dostępne.';
+  }
 }
 
 Future<void> _initializeNotifications() async {
@@ -69,13 +89,23 @@ class WegaVehicleApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
-      home: StreamBuilder<User?>(
-        stream: FirebaseAuth.instance.authStateChanges(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      home: ValueListenableBuilder<bool>(
+        valueListenable: _firebaseReady,
+        builder: (context, firebaseReady, _) {
+          if (!firebaseReady) {
+            return const LoginScreen();
           }
-          return snapshot.hasData ? const HomeScreen() : const LoginScreen();
+          return StreamBuilder<User?>(
+            stream: FirebaseAuth.instance.authStateChanges(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Scaffold(
+                  body: Center(child: CircularProgressIndicator()),
+                );
+              }
+              return snapshot.hasData ? const HomeScreen() : const LoginScreen();
+            },
+          );
         },
       ),
     );
@@ -108,6 +138,13 @@ class _LoginScreenState extends State<LoginScreen> {
       _message = null;
     });
     try {
+      if (!_firebaseReady.value) {
+        setState(
+          () => _message = _startupMessage.value ??
+              'Trwa inicjalizacja Firebase. Spróbuj ponownie za chwilę.',
+        );
+        return;
+      }
       final login = _loginController.text.trim();
       final email = login.contains('@') ? login : '$login@wega.local';
       await FirebaseAuth.instance.signInWithEmailAndPassword(
@@ -147,6 +184,16 @@ class _LoginScreenState extends State<LoginScreen> {
             FilledButton(
               onPressed: _loading ? null : _signIn,
               child: Text(_loading ? 'Logowanie...' : 'Zaloguj'),
+            ),
+            ValueListenableBuilder<String?>(
+              valueListenable: _startupMessage,
+              builder: (context, message, _) {
+                if (message == null) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(message, textAlign: TextAlign.center),
+                );
+              },
             ),
             if (_message != null) ...[
               const SizedBox(height: 12),
@@ -201,7 +248,7 @@ class HomeScreen extends StatelessWidget {
   }
 }
 
-enum StepStage { location, scan, action, active }
+enum StepStage { location, scan, action }
 
 class OperationScreen extends StatefulWidget {
   const OperationScreen({super.key, required this.role, required this.username});
@@ -224,16 +271,19 @@ class _OperationScreenState extends State<OperationScreen> {
   String? _message;
   String? _code;
   String? _codeType;
-  Map<String, dynamic>? _active;
-  String? _activeId;
-  bool _synced = true;
+  final List<Map<String, dynamic>> _operations = [];
+
+  List<Map<String, dynamic>> get _activeOperations => _operations
+      .where((operation) => operation['status'] == 'aktywna')
+      .toList(growable: false);
 
   @override
   void initState() {
     super.initState();
-    _restoreActiveOperation();
+    _restoreOperations();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
-    _connectivity = Connectivity().onConnectivityChanged.listen((_) => _syncPending());
+    _connectivity =
+        Connectivity().onConnectivityChanged.listen((_) => _syncPending());
   }
 
   @override
@@ -245,82 +295,129 @@ class _OperationScreenState extends State<OperationScreen> {
     super.dispose();
   }
 
+  int _notificationId(String operationId, int suffix) =>
+      (operationId.hashCode & 0x3fffffff) + suffix;
+
+  int _operationNotificationId(Map<String, dynamic> operation, String field) =>
+      operation[field] as int? ??
+      _notificationId(
+        operation['id'] as String? ?? '',
+        field == 'warningNotificationId' ? 35 : 40,
+      );
+
   void _tick() {
-    final active = _active;
-    if (active == null || !mounted) return;
+    if (!mounted || _activeOperations.isEmpty) return;
     final now = DateTime.now();
-    final plannedEnd = DateTime.parse(active['plannedEndAt'] as String);
-    final type = active['actionType'] as String;
-    final warned = active['warningSent'] == true;
-    final finished = active['completionNotified'] == true;
-    if (type == 'obsługa' && !warned) {
-      final warningAt = DateTime.parse(active['startedAt'] as String)
-          .add(const Duration(minutes: _serviceWarningMinutes));
-      if (!now.isBefore(warningAt)) {
-        _showNotification('Obsługa pojazdu', 'Pozostało 5 minut do zakończenia obsługi.', 35);
-        active['warningSent'] = true;
-        _persistActive();
+    var changed = false;
+    for (final operation in _activeOperations) {
+      final plannedEnd = DateTime.parse(operation['plannedEndAt'] as String);
+      final type = operation['actionType'] as String;
+      final warned = operation['warningSent'] == true;
+      final finished = operation['completionNotified'] == true;
+      if (type == 'obsługa' && !warned) {
+        final warningAt = DateTime.parse(operation['startedAt'] as String)
+            .add(const Duration(minutes: _serviceWarningMinutes));
+        if (!now.isBefore(warningAt)) {
+          unawaited(_showNotification(
+            'Obsługa pojazdu',
+            'Pozostało 5 minut do zakończenia obsługi.',
+            _operationNotificationId(operation, 'warningNotificationId'),
+          ));
+          operation['warningSent'] = true;
+          changed = true;
+        }
+      }
+      if (!finished && !now.isBefore(plannedEnd)) {
+        unawaited(_showNotification(
+          type == 'ładowanie' ? 'Ładowanie zakończone' : 'Obsługa zakończona',
+          type == 'ładowanie'
+              ? 'Zakończono czas ładowania. Odłącz ładowarkę.'
+              : 'Czas obsługi zakończony.',
+          _operationNotificationId(operation, 'completionNotificationId'),
+        ));
+        operation['completionNotified'] = true;
+        changed = true;
       }
     }
-    if (!finished && !now.isBefore(plannedEnd)) {
-      _showNotification(
-        type == 'ładowanie' ? 'Ładowanie zakończone' : 'Obsługa zakończona',
-        type == 'ładowanie'
-            ? 'Zakończono czas ładowania. Odłącz ładowarkę.'
-            : 'Czas obsługi zakończony.',
-        40,
-      );
-      active['completionNotified'] = true;
-      _persistActive();
+    if (changed) {
+      unawaited(_persistOperations());
     }
     setState(() {});
   }
 
-  Future<void> _restoreActiveOperation() async {
+  Future<void> _restoreOperations() async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString('activeOperation');
+    final raw = prefs.getString('activeOperations');
     if (raw != null) {
+      final decoded = jsonDecode(raw) as List<dynamic>;
       setState(() {
-        _active = jsonDecode(raw) as Map<String, dynamic>;
-        _activeId = _active!['id'] as String?;
-        _synced = _active!['synced'] == true;
-        _stage = StepStage.active;
+        _operations
+          ..clear()
+          ..addAll(
+            decoded.map((item) => Map<String, dynamic>.from(item as Map)),
+          );
       });
+    } else {
+      final legacy = prefs.getString('activeOperation');
+      if (legacy != null) {
+        setState(() {
+          _operations
+            ..clear()
+            ..add(Map<String, dynamic>.from(jsonDecode(legacy) as Map));
+        });
+        await prefs.remove('activeOperation');
+        await _persistOperations();
+      }
     }
     await _syncPending();
   }
 
-  Future<void> _persistActive() async {
+  Future<void> _persistOperations() async {
     final prefs = await SharedPreferences.getInstance();
-    if (_active == null) {
-      await prefs.remove('activeOperation');
+    if (_operations.isEmpty) {
+      await prefs.remove('activeOperations');
     } else {
-      await prefs.setString('activeOperation', jsonEncode(_active));
+      await prefs.setString('activeOperations', jsonEncode(_operations));
     }
   }
 
   Future<void> _syncPending() async {
-    if (_active == null || _active!['synced'] == true) return;
-    try {
-      await _firestore.collection('operations').doc(_activeId).set(_firestorePayload(_active!));
-      _active!['synced'] = true;
-      _synced = true;
-      await _persistActive();
+    var changed = false;
+    for (final operation in List<Map<String, dynamic>>.from(_operations)) {
+      if (operation['synced'] == true) continue;
+      try {
+        await _firestore
+            .collection('operations')
+            .doc(operation['id'] as String)
+            .set(_firestorePayload(operation));
+        operation['synced'] = true;
+        changed = true;
+        if (operation['status'] != 'aktywna') {
+          _operations.removeWhere((item) => item['id'] == operation['id']);
+        }
+      } catch (_) {
+        operation['synced'] = false;
+      }
+    }
+    if (changed) {
+      await _persistOperations();
       if (mounted) setState(() {});
-    } catch (_) {
-      _synced = false;
     }
   }
 
   Map<String, dynamic> _firestorePayload(Map<String, dynamic> data) => {
         ...data,
-        'startedAt': Timestamp.fromDate(DateTime.parse(data['startedAt'] as String)),
-        'plannedEndAt': Timestamp.fromDate(DateTime.parse(data['plannedEndAt'] as String)),
+        'startedAt':
+            Timestamp.fromDate(DateTime.parse(data['startedAt'] as String)),
+        'plannedEndAt':
+            Timestamp.fromDate(DateTime.parse(data['plannedEndAt'] as String)),
         'actualEndAt': data['actualEndAt'] == null
             ? null
             : Timestamp.fromDate(DateTime.parse(data['actualEndAt'] as String)),
-        'createdAt': Timestamp.fromDate(DateTime.parse(data['createdAt'] as String)),
-        'updatedAt': Timestamp.fromDate(DateTime.parse(data['updatedAt'] as String)),
+        'createdAt':
+            Timestamp.fromDate(DateTime.parse(data['createdAt'] as String)),
+        'updatedAt':
+            Timestamp.fromDate(DateTime.parse(data['updatedAt'] as String)),
       };
 
   void _confirmLocation() {
@@ -370,9 +467,9 @@ class _OperationScreenState extends State<OperationScreen> {
     final user = _auth.currentUser!;
     final now = DateTime.now();
     final minutes = type == 'ładowanie' ? _chargingMinutes : _serviceMinutes;
-    _activeId = _firestore.collection('operations').doc().id;
-    _active = {
-      'id': _activeId,
+    final operationId = _firestore.collection('operations').doc().id;
+    final operation = {
+      'id': operationId,
       'userId': user.uid,
       'username': widget.username,
       'userRole': widget.role,
@@ -387,48 +484,50 @@ class _OperationScreenState extends State<OperationScreen> {
       'status': 'aktywna',
       'createdAt': now.toIso8601String(),
       'updatedAt': now.toIso8601String(),
+      'warningNotificationId': _notificationId(operationId, 35),
+      'completionNotificationId': _notificationId(operationId, 40),
       'warningSent': false,
       'completionNotified': false,
       'synced': false,
     };
-    await _persistActive();
-    setState(() {
-      _stage = StepStage.active;
-      _synced = false;
-    });
+    _operations.add(operation);
+    await _persistOperations();
+    _resetForm(message: 'Operacja rozpoczęta. Możesz dodać kolejną.');
     await _syncPending();
   }
 
-  Future<void> _finish(String status) async {
-    if (_active == null) return;
+  Future<void> _finish(Map<String, dynamic> operation, String status) async {
     final now = DateTime.now();
-    final startedAt = DateTime.parse(_active!['startedAt'] as String);
-    _active!
+    final startedAt = DateTime.parse(operation['startedAt'] as String);
+    operation
       ..['actualEndAt'] = now.toIso8601String()
       ..['actualDurationSeconds'] = now.difference(startedAt).inSeconds
       ..['status'] = status
       ..['updatedAt'] = now.toIso8601String();
     try {
-      await _firestore.collection('operations').doc(_activeId).set(_firestorePayload(_active!));
-      await _persistActive();
-      await SharedPreferences.getInstance().then((p) => p.remove('activeOperation'));
-      _reset(message: 'Operacja zapisana w historii.');
+      await _firestore
+          .collection('operations')
+          .doc(operation['id'] as String)
+          .set(_firestorePayload(operation));
+      _operations.removeWhere((item) => item['id'] == operation['id']);
+      await _persistOperations();
+      setState(() => _message = 'Operacja zapisana w historii.');
     } catch (_) {
-      _active!['synced'] = false;
-      await _persistActive();
-      setState(() => _message = 'Brak internetu. Operacja zostanie zsynchronizowana później.');
+      operation['synced'] = false;
+      await _persistOperations();
+      setState(
+        () => _message = 'Brak internetu. Operacja zostanie zsynchronizowana później.',
+      );
     }
   }
 
-  void _reset({String? message}) {
+  void _resetForm({String? message}) {
     setState(() {
       _stage = StepStage.location;
       _locationController.clear();
       _manualCodeController.clear();
       _code = null;
       _codeType = null;
-      _active = null;
-      _activeId = null;
       _message = message;
     });
   }
@@ -437,7 +536,8 @@ class _OperationScreenState extends State<OperationScreen> {
       '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
 
   String _remaining(Map<String, dynamic> active) {
-    final left = DateTime.parse(active['plannedEndAt'] as String).difference(DateTime.now());
+    final left =
+        DateTime.parse(active['plannedEndAt'] as String).difference(DateTime.now());
     final seconds = left.inSeconds.abs();
     final sign = left.inSeconds < 0 ? '-' : '';
     return '$sign${(seconds ~/ 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
@@ -445,46 +545,91 @@ class _OperationScreenState extends State<OperationScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final activeOperations = _activeOperations;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         if (_stage == StepStage.location) ...[
-          Text('Etap 1 — lokalizacja pojazdu', style: Theme.of(context).textTheme.titleLarge),
+          Text(
+            'Etap 1 — lokalizacja pojazdu',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
           const SizedBox(height: 12),
           TextField(
             controller: _locationController,
-            decoration: const InputDecoration(border: OutlineInputBorder(), labelText: 'Lokalizacja pojazdu'),
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              labelText: 'Lokalizacja pojazdu',
+            ),
           ),
           const SizedBox(height: 12),
-          FilledButton(onPressed: _confirmLocation, child: const Text('Przejdź do skanowania')),
+          FilledButton(
+            onPressed: _confirmLocation,
+            child: const Text('Przejdź do skanowania'),
+          ),
         ],
         if (_stage == StepStage.scan) ...[
-          Text('Etap 2 — skanowanie', style: Theme.of(context).textTheme.titleLarge),
+          Text(
+            'Etap 2 — skanowanie',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
           Text('Lokalizacja: ${_locationController.text.trim()}'),
           const SizedBox(height: 12),
-          FilledButton.icon(onPressed: _scanCode, icon: const Icon(Icons.qr_code_scanner), label: const Text('Skanuj QR / Code 128 / GS1-128')),
+          FilledButton.icon(
+            onPressed: _scanCode,
+            icon: const Icon(Icons.qr_code_scanner),
+            label: const Text('Skanuj QR / Code 128 / GS1-128'),
+          ),
           const SizedBox(height: 12),
           TextField(
             controller: _manualCodeController,
-            decoration: const InputDecoration(border: OutlineInputBorder(), labelText: 'Ręczny VIN lub identyfikator'),
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              labelText: 'Ręczny VIN lub identyfikator',
+            ),
             onChanged: (_) => _manualCode(),
           ),
-          if (_code != null) Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Text('Rodzaj kodu: $_codeType\nOdczytana wartość: $_code'),
-          ),
+          if (_code != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Text('Rodzaj kodu: $_codeType\nOdczytana wartość: $_code'),
+            ),
           FilledButton(onPressed: _approveCode, child: const Text('Zatwierdź')),
         ],
         if (_stage == StepStage.action) ...[
-          Text('Etap 3 — wybór akcji', style: Theme.of(context).textTheme.titleLarge),
-          Text('Lokalizacja: ${_locationController.text.trim()}\nKod: $_code\nTyp: $_codeType'),
+          Text(
+            'Etap 3 — wybór akcji',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+          Text(
+            'Lokalizacja: ${_locationController.text.trim()}\nKod: $_code\nTyp: $_codeType',
+          ),
           const SizedBox(height: 12),
-          FilledButton(onPressed: () => _startAction('ładowanie'), child: const Text('Rozpocznij ładowanie (30 min)')),
+          FilledButton(
+            onPressed: () => _startAction('ładowanie'),
+            child: const Text('Rozpocznij ładowanie (30 min)'),
+          ),
           const SizedBox(height: 8),
-          FilledButton(onPressed: () => _startAction('obsługa'), child: const Text('Rozpocznij obsługę (40 min)')),
+          FilledButton(
+            onPressed: () => _startAction('obsługa'),
+            child: const Text('Rozpocznij obsługę (40 min)'),
+          ),
         ],
-        if (_stage == StepStage.active && _active != null) _activeCard(_active!),
-        if (_message != null) Padding(padding: const EdgeInsets.only(top: 16), child: Text(_message!, textAlign: TextAlign.center)),
+        if (_message != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 16),
+            child: Text(_message!, textAlign: TextAlign.center),
+          ),
+        const SizedBox(height: 16),
+        Text(
+          'Aktywne operacje',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        const SizedBox(height: 8),
+        if (activeOperations.isEmpty)
+          const Text('Brak aktywnych operacji.')
+        else
+          ...activeOperations.map(_activeCard),
       ],
     );
   }
@@ -493,21 +638,30 @@ class _OperationScreenState extends State<OperationScreen> {
     final start = DateTime.parse(active['startedAt'] as String);
     final plannedEnd = DateTime.parse(active['plannedEndAt'] as String);
     final isOvertime = DateTime.now().isAfter(plannedEnd);
+    final synced = active['synced'] == true;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Text('Aktywna czynność', style: Theme.of(context).textTheme.titleLarge),
+          Text('ID: ${active['id']}'),
           Text('Lokalizacja: ${active['vehicleLocation']}'),
           Text('Kod: ${active['scannedCode']} (${active['codeType']})'),
           Text('Czynność: ${active['actionType']}'),
+          Text('Status: ${active['status']}'),
           Text('Start: ${_format(start)}'),
           Text('Planowany koniec: ${_format(plannedEnd)}'),
           Text('${isOvertime ? 'Przekroczony czas' : 'Pozostały czas'}: ${_remaining(active)}'),
-          if (!_synced) const Text('Tryb offline: zapis oczekuje na synchronizację.'),
+          if (!synced) const Text('Tryb offline: zapis oczekuje na synchronizację.'),
           const SizedBox(height: 12),
-          FilledButton(onPressed: () => _finish('zakończona wcześniej'), child: const Text('Zakończ wcześniej')),
-          TextButton(onPressed: () => _finish('anulowana'), child: const Text('Anuluj')),
+          FilledButton(
+            onPressed: () => _finish(active, 'zakończona wcześniej'),
+            child: const Text('Zakończ wcześniej'),
+          ),
+          TextButton(
+            onPressed: () => _finish(active, 'anulowana'),
+            child: const Text('Anuluj'),
+          ),
         ]),
       ),
     );

@@ -1,0 +1,39 @@
+name: Flutter CI
+
+on:
+  push:
+    branches:
+      - main
+      - wega-a-3.1-test-candidate
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  analyze-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+
+      - name: Zainstaluj Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Sprawdź wersję Flutter
+        run: flutter --version
+
+      - name: Pobierz zależności
+        run: flutter pub get
+
+      - name: Analiza kodu
+        run: flutter analyze
+
+      - name: Testy
+        run: flutter test
+
+      - name: Zbuduj APK
+        run: flutter build apk --debug

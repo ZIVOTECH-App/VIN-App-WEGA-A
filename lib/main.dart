@@ -1,3 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -12,9 +17,14 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart' as mlkit;
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+ main
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -33,12 +43,19 @@ final ValueNotifier<bool> _firebaseReady = ValueNotifier<bool>(false);
 
 const AndroidNotificationChannel _vehicleOperationsChannel =
     AndroidNotificationChannel(
+codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
   'operation_alerts_v2',
+
+  'vehicle_operations',
+ main
   'Operacje pojazdów',
   description: 'Powiadomienia o zakończeniu ładowania i obsługi',
   importance: Importance.max,
   playSound: true,
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
   enableVibration: true,
+
+ main
 );
 
 void main() {
@@ -67,8 +84,12 @@ Future<void> _initializeAppServices() async {
 
 Future<void> _initializeNotifications() async {
   tz.initializeTimeZones();
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
   final timezoneName = await FlutterTimezone.getLocalTimezone();
   tz.setLocalLocation(tz.getLocation(timezoneName));
+
+  tz.setLocalLocation(tz.local);
+ main
   const android = AndroidInitializationSettings('@mipmap/ic_launcher');
   const ios = DarwinInitializationSettings();
   await _notifications.initialize(
@@ -88,11 +109,14 @@ Future<void> _scheduleNotification(
   int id,
   DateTime scheduledAt,
 ) async {
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
   final androidNotifications = _notifications
       .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin>();
   final canScheduleExact =
       await androidNotifications?.canScheduleExactNotifications() ?? false;
+
+ main
   await _notifications.zonedSchedule(
     id,
     title,
@@ -100,6 +124,7 @@ Future<void> _scheduleNotification(
     tz.TZDateTime.from(scheduledAt, tz.local),
     const NotificationDetails(
       android: AndroidNotificationDetails(
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
         'operation_alerts_v2',
         'Operacje pojazdów',
         channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
@@ -116,6 +141,19 @@ Future<void> _scheduleNotification(
     androidScheduleMode: canScheduleExact
         ? AndroidScheduleMode.exactAllowWhileIdle
         : AndroidScheduleMode.inexactAllowWhileIdle,
+
+        'vehicle_operations',
+        'Operacje pojazdów',
+        channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
+        importance: Importance.max,
+        priority: Priority.high,
+        playSound: true,
+        channelShowBadge: true,
+      ),
+      iOS: DarwinNotificationDetails(presentSound: true),
+    ),
+    androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+ main
     uiLocalNotificationDateInterpretation:
         UILocalNotificationDateInterpretation.absoluteTime,
   );
@@ -140,10 +178,14 @@ Future<void> _showNotification(String title, String body, int id) async {
     importance: Importance.max,
     priority: Priority.max,
     playSound: true,
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
     enableVibration: true,
     channelShowBadge: true,
     visibility: NotificationVisibility.public,
     audioAttributesUsage: AudioAttributesUsage.notification,
+
+    channelShowBadge: true,
+ main
   );
   const ios = DarwinNotificationDetails(presentSound: true);
   await _notifications.show(
@@ -801,6 +843,7 @@ class ScannerScreen extends StatefulWidget {
 }
 
 class _ScannerScreenState extends State<ScannerScreen> {
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
   final mlkit.BarcodeScanner _barcodeScanner = mlkit.BarcodeScanner(
     formats: [mlkit.BarcodeFormat.qrCode, mlkit.BarcodeFormat.code128],
   );
@@ -814,9 +857,21 @@ class _ScannerScreenState extends State<ScannerScreen> {
   bool _isConfirming = false;
   String? _error;
 
+  final MobileScannerController _controller = MobileScannerController(
+    formats: const [BarcodeFormat.qrCode, BarcodeFormat.code128],
+    returnImage: true,
+  );
+  final TextRecognizer _textRecognizer = TextRecognizer();
+  DateTime _lastReadAt = DateTime.fromMillisecondsSinceEpoch(0);
+  String? _lastReadValue;
+  bool _isConfirming = false;
+  bool _isProcessingText = false;
+ main
+
   static final RegExp _vinPattern = RegExp(r'[A-HJ-NPR-Z0-9]{17}');
 
   @override
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
   void initState() {
     super.initState();
     unawaited(_initializeCamera());
@@ -826,10 +881,15 @@ class _ScannerScreenState extends State<ScannerScreen> {
   void dispose() {
     unawaited(_stopCamera());
     _barcodeScanner.close();
+
+  void dispose() {
+    _controller.dispose();
+ main
     _textRecognizer.close();
     super.dispose();
   }
 
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
   Future<void> _initializeCamera() async {
     try {
       final cameras = await availableCameras();
@@ -885,6 +945,38 @@ class _ScannerScreenState extends State<ScannerScreen> {
       case mlkit.BarcodeFormat.qrCode:
         return _extractVin(value) == value ? 'VIN z QR' : 'QR';
       case mlkit.BarcodeFormat.code128:
+=======
+  String _normalizeVin(String value) =>
+      value.replaceAll(RegExp(r'[\s-]+'), '').toUpperCase();
+
+  String? _extractVin(String value) {
+    final normalized = _normalizeVin(value);
+    final directMatch = _vinPattern.firstMatch(normalized);
+    if (directMatch != null) return directMatch.group(0);
+
+    final joined = value
+        .split(RegExp(r'\s+'))
+        .map(_normalizeVin)
+        .where((part) => part.isNotEmpty)
+        .join();
+    return _vinPattern.firstMatch(joined)?.group(0);
+  }
+
+  bool _isDuplicateRead(String value) {
+    final now = DateTime.now();
+    final duplicate = _lastReadValue == value &&
+        now.difference(_lastReadAt) < const Duration(seconds: 3);
+    _lastReadValue = value;
+    _lastReadAt = now;
+    return duplicate;
+  }
+
+  String _type(Barcode barcode, String value) {
+    switch (barcode.format) {
+      case BarcodeFormat.qrCode:
+        return _extractVin(value) == value ? 'VIN z QR' : 'QR';
+      case BarcodeFormat.code128:
+ main
         return _extractVin(value) == value
             ? 'VIN z Code 128 / GS1-128 / EAN-128'
             : 'Code 128 / GS1-128 / EAN-128';
@@ -893,6 +985,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
     }
   }
 
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
   InputImageRotation _imageRotation(CameraDescription camera) {
     final rotation = InputImageRotationValue.fromRawValue(camera.sensorOrientation);
     return rotation ?? InputImageRotation.rotation0deg;
@@ -974,12 +1067,25 @@ class _ScannerScreenState extends State<ScannerScreen> {
     if (controller != null && controller.value.isStreamingImages) {
       await controller.stopImageStream();
     }
+
+  Future<void> _confirmRead(String value, String type) async {
+    final normalized = _extractVin(value) ?? value.trim().toUpperCase();
+    if (normalized.isEmpty || _isDuplicateRead(normalized) || _isConfirming) {
+      return;
+    }
+    _isConfirming = true;
+    await _controller.stop();
+ main
     if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
         title: Text('Odczytano: $result'),
+
+        title: Text('Odczytano: $normalized'),
+ main
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -988,6 +1094,67 @@ class _ScannerScreenState extends State<ScannerScreen> {
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('Potwierdź'),
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (confirmed == true) {
+      Navigator.of(context).pop(ScanResult(normalized, type));
+      return;
+    }
+    _isConfirming = false;
+    _lastReadValue = null;
+    await _controller.start();
+  }
+
+  Future<void> _readText(BarcodeCapture capture) async {
+    if (_isProcessingText || _isConfirming || capture.image == null) return;
+    _isProcessingText = true;
+    try {
+      final size = MediaQuery.sizeOf(context);
+      final inputImage = InputImage.fromBytes(
+        bytes: capture.image!,
+        metadata: InputImageMetadata(
+          size: Size(size.width, size.height),
+          rotation: InputImageRotation.rotation0deg,
+          format: InputImageFormat.nv21,
+          bytesPerRow: size.width.toInt(),
+        ),
+      );
+      final text = await _textRecognizer.processImage(inputImage);
+      final vin = _extractVin(text.text);
+      if (vin != null) {
+        await _confirmRead(vin, 'VIN OCR');
+      }
+    } catch (_) {
+      // OCR frames that cannot be decoded by ML Kit are ignored; barcode scanning continues.
+    } finally {
+      _isProcessingText = false;
+    }
+  }
+
+  void _onDetect(BarcodeCapture capture) {
+    for (final barcode in capture.barcodes) {
+      final value = barcode.rawValue;
+      if (value != null && value.trim().isNotEmpty) {
+        unawaited(_confirmRead(value, _type(barcode, value)));
+        return;
+      }
+    }
+    unawaited(_readText(capture));
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const Text('Skanowanie')),
+        body: Stack(children: [
+          MobileScanner(
+            controller: _controller,
+            onDetect: _onDetect,
+ main
           ),
         ],
       ),

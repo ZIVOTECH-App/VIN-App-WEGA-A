@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - wega-a-3.1-test-candidate
+      - wega-a-ui-refactor
   pull_request:
     branches:
       - main

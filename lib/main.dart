@@ -1,18 +1,25 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:camera/camera.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:excel/excel.dart' as xls;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
+import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart' as mlkit;
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:timezone/data/latest.dart' as tz;
+import 'package:timezone/timezone.dart' as tz;
 
 const _chargingMinutes = 30;
 const _serviceMinutes = 40;
@@ -23,6 +30,16 @@ final FlutterLocalNotificationsPlugin _notifications =
 
 final ValueNotifier<String?> _startupMessage = ValueNotifier<String?>(null);
 final ValueNotifier<bool> _firebaseReady = ValueNotifier<bool>(false);
+
+const AndroidNotificationChannel _vehicleOperationsChannel =
+    AndroidNotificationChannel(
+  'operation_alerts_v2',
+  'Operacje pojazdów',
+  description: 'Powiadomienia o zakończeniu ładowania i obsługi',
+  importance: Importance.max,
+  playSound: true,
+  enableVibration: true,
+);
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -49,25 +66,84 @@ Future<void> _initializeAppServices() async {
 }
 
 Future<void> _initializeNotifications() async {
+  tz.initializeTimeZones();
+  final timezoneName = await FlutterTimezone.getLocalTimezone();
+  tz.setLocalLocation(tz.getLocation(timezoneName));
   const android = AndroidInitializationSettings('@mipmap/ic_launcher');
   const ios = DarwinInitializationSettings();
   await _notifications.initialize(
     const InitializationSettings(android: android, iOS: ios),
   );
-  await _notifications
+  final androidNotifications = _notifications
       .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>()
-      ?.requestNotificationsPermission();
+          AndroidFlutterLocalNotificationsPlugin>();
+  await androidNotifications?.createNotificationChannel(_vehicleOperationsChannel);
+  await androidNotifications?.requestNotificationsPermission();
+  await androidNotifications?.requestExactAlarmsPermission();
+}
+
+Future<void> _scheduleNotification(
+  String title,
+  String body,
+  int id,
+  DateTime scheduledAt,
+) async {
+  final androidNotifications = _notifications
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+  final canScheduleExact =
+      await androidNotifications?.canScheduleExactNotifications() ?? false;
+  await _notifications.zonedSchedule(
+    id,
+    title,
+    body,
+    tz.TZDateTime.from(scheduledAt, tz.local),
+    const NotificationDetails(
+      android: AndroidNotificationDetails(
+        'operation_alerts_v2',
+        'Operacje pojazdów',
+        channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
+        importance: Importance.max,
+        priority: Priority.max,
+        playSound: true,
+        enableVibration: true,
+        channelShowBadge: true,
+        visibility: NotificationVisibility.public,
+        audioAttributesUsage: AudioAttributesUsage.notification,
+      ),
+      iOS: DarwinNotificationDetails(presentSound: true),
+    ),
+    androidScheduleMode: canScheduleExact
+        ? AndroidScheduleMode.exactAllowWhileIdle
+        : AndroidScheduleMode.inexactAllowWhileIdle,
+    uiLocalNotificationDateInterpretation:
+        UILocalNotificationDateInterpretation.absoluteTime,
+  );
+}
+
+Future<void> _cancelOperationNotifications(Map<String, dynamic> operation) async {
+  await _notifications.cancel(
+    operation['warningNotificationId'] as int? ??
+        ((operation['id'] as String? ?? '').hashCode & 0x3fffffff) + 35,
+  );
+  await _notifications.cancel(
+    operation['completionNotificationId'] as int? ??
+        ((operation['id'] as String? ?? '').hashCode & 0x3fffffff) + 40,
+  );
 }
 
 Future<void> _showNotification(String title, String body, int id) async {
   const android = AndroidNotificationDetails(
-    'vehicle_operations',
+    'operation_alerts_v2',
     'Operacje pojazdów',
     channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
     importance: Importance.max,
-    priority: Priority.high,
+    priority: Priority.max,
     playSound: true,
+    enableVibration: true,
+    channelShowBadge: true,
+    visibility: NotificationVisibility.public,
+    audioAttributesUsage: AudioAttributesUsage.notification,
   );
   const ios = DarwinNotificationDetails(presentSound: true);
   await _notifications.show(
@@ -491,9 +567,34 @@ class _OperationScreenState extends State<OperationScreen> {
       'synced': false,
     };
     _operations.add(operation);
+    await _scheduleOperationNotifications(operation);
     await _persistOperations();
     _resetForm(message: 'Operacja rozpoczęta. Możesz dodać kolejną.');
     await _syncPending();
+  }
+
+  Future<void> _scheduleOperationNotifications(
+    Map<String, dynamic> operation,
+  ) async {
+    final type = operation['actionType'] as String;
+    final startedAt = DateTime.parse(operation['startedAt'] as String);
+    final plannedEnd = DateTime.parse(operation['plannedEndAt'] as String);
+    if (type == 'obsługa') {
+      await _scheduleNotification(
+        'Obsługa pojazdu',
+        'Pozostało 5 minut do zakończenia obsługi.',
+        _operationNotificationId(operation, 'warningNotificationId'),
+        startedAt.add(const Duration(minutes: _serviceWarningMinutes)),
+      );
+    }
+    await _scheduleNotification(
+      type == 'ładowanie' ? 'Ładowanie zakończone' : 'Obsługa zakończona',
+      type == 'ładowanie'
+          ? 'Zakończono czas ładowania. Odłącz ładowarkę.'
+          : 'Czas obsługi zakończony.',
+      _operationNotificationId(operation, 'completionNotificationId'),
+      plannedEnd,
+    );
   }
 
   Future<void> _finish(Map<String, dynamic> operation, String status) async {
@@ -504,6 +605,7 @@ class _OperationScreenState extends State<OperationScreen> {
       ..['actualDurationSeconds'] = now.difference(startedAt).inSeconds
       ..['status'] = status
       ..['updatedAt'] = now.toIso8601String();
+    await _cancelOperationNotifications(operation);
     try {
       await _firestore
           .collection('operations')
@@ -543,12 +645,29 @@ class _OperationScreenState extends State<OperationScreen> {
     return '$sign${(seconds ~/ 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
   }
 
+  Future<void> _testNotificationSound() async {
+    await _showNotification(
+      'Test powiadomienia',
+      'Test powiadomienia',
+      900001,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final activeOperations = _activeOperations;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: _testNotificationSound,
+            icon: const Icon(Icons.notifications_active),
+            label: const Text('Test dźwięku'),
+          ),
+        ),
+        const SizedBox(height: 8),
         if (_stage == StepStage.location) ...[
           Text(
             'Etap 1 — lokalizacja pojazdu',
@@ -578,7 +697,7 @@ class _OperationScreenState extends State<OperationScreen> {
           FilledButton.icon(
             onPressed: _scanCode,
             icon: const Icon(Icons.qr_code_scanner),
-            label: const Text('Skanuj QR / Code 128 / GS1-128'),
+            label: const Text('Skanuj'),
           ),
           const SizedBox(height: 12),
           TextField(
@@ -674,44 +793,280 @@ class ScanResult {
   final String type;
 }
 
-class ScannerScreen extends StatelessWidget {
+class ScannerScreen extends StatefulWidget {
   const ScannerScreen({super.key});
 
-  String _type(Barcode barcode) {
+  @override
+  State<ScannerScreen> createState() => _ScannerScreenState();
+}
+
+class _ScannerScreenState extends State<ScannerScreen> {
+  final mlkit.BarcodeScanner _barcodeScanner = mlkit.BarcodeScanner(
+    formats: [mlkit.BarcodeFormat.qrCode, mlkit.BarcodeFormat.code128],
+  );
+  final TextRecognizer _textRecognizer = TextRecognizer();
+  CameraController? _cameraController;
+  DateTime _lastOcrAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastReadAt = DateTime.fromMillisecondsSinceEpoch(0);
+  String? _lastReadValue;
+  bool _isInitializing = true;
+  bool _isAnalyzing = false;
+  bool _isConfirming = false;
+  String? _error;
+
+  static final RegExp _vinPattern = RegExp(r'[A-HJ-NPR-Z0-9]{17}');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_initializeCamera());
+  }
+
+  @override
+  void dispose() {
+    unawaited(_stopCamera());
+    _barcodeScanner.close();
+    _textRecognizer.close();
+    super.dispose();
+  }
+
+  Future<void> _initializeCamera() async {
+    try {
+      final cameras = await availableCameras();
+      final camera = cameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+      final controller = CameraController(
+        camera,
+        ResolutionPreset.medium,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420,
+      );
+      await controller.initialize();
+      await controller.startImageStream(_processFrame);
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _cameraController = controller;
+        _isInitializing = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isInitializing = false;
+        _error = 'Nie udało się uruchomić aparatu. Sprawdź uprawnienia.';
+      });
+    }
+  }
+
+  Future<void> _stopCamera() async {
+    final controller = _cameraController;
+    _cameraController = null;
+    if (controller == null) return;
+    if (controller.value.isStreamingImages) {
+      await controller.stopImageStream();
+    }
+    await controller.dispose();
+  }
+
+  String _normalizeVinText(String value) => value
+      .toUpperCase()
+      .replaceAll(RegExp(r'[\s\-\n\r]+'), '')
+      .replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
+  String? _extractVin(String value) =>
+      _vinPattern.firstMatch(_normalizeVinText(value))?.group(0);
+
+  String _readableBarcodeType(mlkit.Barcode barcode, String value) {
     switch (barcode.format) {
-      case BarcodeFormat.qrCode:
-        return 'QR';
-      case BarcodeFormat.code128:
-        return 'Code 128 / GS1-128 / EAN-128';
+      case mlkit.BarcodeFormat.qrCode:
+        return _extractVin(value) == value ? 'VIN z QR' : 'QR';
+      case mlkit.BarcodeFormat.code128:
+        return _extractVin(value) == value
+            ? 'VIN z Code 128 / GS1-128 / EAN-128'
+            : 'Code 128 / GS1-128 / EAN-128';
       default:
-        return barcode.rawValue?.length == 17 ? 'VIN' : barcode.format.name;
+        return _extractVin(value) == value ? 'VIN' : barcode.format.name;
+    }
+  }
+
+  InputImageRotation _imageRotation(CameraDescription camera) {
+    final rotation = InputImageRotationValue.fromRawValue(camera.sensorOrientation);
+    return rotation ?? InputImageRotation.rotation0deg;
+  }
+
+  Uint8List _cameraImageToNv21(CameraImage image) {
+    if (image.planes.length == 1) return image.planes.first.bytes;
+
+    final yPlane = image.planes[0];
+    final uPlane = image.planes[1];
+    final vPlane = image.planes[2];
+    final width = image.width;
+    final height = image.height;
+    final bytes = Uint8List(width * height + (width * height ~/ 2));
+    var offset = 0;
+
+    for (var row = 0; row < height; row++) {
+      final rowStart = row * yPlane.bytesPerRow;
+      bytes.setRange(offset, offset + width, yPlane.bytes, rowStart);
+      offset += width;
+    }
+
+    final chromaHeight = height ~/ 2;
+    final chromaWidth = width ~/ 2;
+    for (var row = 0; row < chromaHeight; row++) {
+      for (var col = 0; col < chromaWidth; col++) {
+        final vuIndex = row * vPlane.bytesPerRow + col * vPlane.bytesPerPixel!;
+        final uvIndex = row * uPlane.bytesPerRow + col * uPlane.bytesPerPixel!;
+        bytes[offset++] = vPlane.bytes[vuIndex];
+        bytes[offset++] = uPlane.bytes[uvIndex];
+      }
+    }
+    return bytes;
+  }
+
+  InputImage _inputImageFromCameraImage(CameraImage image) {
+    final controller = _cameraController!;
+    return InputImage.fromBytes(
+      bytes: _cameraImageToNv21(image),
+      metadata: InputImageMetadata(
+        size: ui.Size(image.width.toDouble(), image.height.toDouble()),
+        rotation: _imageRotation(controller.description),
+        format: InputImageFormat.nv21,
+        bytesPerRow: image.width,
+      ),
+    );
+  }
+
+  String _recognizedTextToSearchText(RecognizedText recognizedText) {
+    final parts = <String>[recognizedText.text];
+    for (final block in recognizedText.blocks) {
+      parts.add(block.text);
+      for (final line in block.lines) {
+        parts.add(line.text);
+        for (final element in line.elements) {
+          parts.add(element.text);
+        }
+      }
+    }
+    return parts.join('\n');
+  }
+
+  bool _isDuplicateRead(String value) {
+    final now = DateTime.now();
+    final duplicate = _lastReadValue == value &&
+        now.difference(_lastReadAt) < const Duration(seconds: 3);
+    _lastReadValue = value;
+    _lastReadAt = now;
+    return duplicate;
+  }
+
+  Future<void> _confirmRead(String value, String type) async {
+    final normalizedValue = type == 'VIN OCR' ? _extractVin(value) : null;
+    final result = normalizedValue ?? value.trim().toUpperCase();
+    if (result.isEmpty || _isDuplicateRead(result) || _isConfirming) return;
+
+    _isConfirming = true;
+    final controller = _cameraController;
+    if (controller != null && controller.value.isStreamingImages) {
+      await controller.stopImageStream();
+    }
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text('Odczytano: $result'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Skanuj ponownie'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Potwierdź'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (confirmed == true) {
+      Navigator.of(context).pop(ScanResult(result, type));
+      return;
+    }
+
+    _lastReadValue = null;
+    _isConfirming = false;
+    final currentController = _cameraController;
+    if (currentController != null && !currentController.value.isStreamingImages) {
+      await currentController.startImageStream(_processFrame);
+    }
+  }
+
+  Future<void> _processFrame(CameraImage image) async {
+    if (_isAnalyzing || _isConfirming || _cameraController == null) return;
+    _isAnalyzing = true;
+    try {
+      final inputImage = _inputImageFromCameraImage(image);
+      final barcodes = await _barcodeScanner.processImage(inputImage);
+      for (final barcode in barcodes) {
+        final value = barcode.rawValue;
+        if (value != null && value.trim().isNotEmpty) {
+          await _confirmRead(value, _readableBarcodeType(barcode, value));
+          return;
+        }
+      }
+
+      final now = DateTime.now();
+      if (now.difference(_lastOcrAt) >= const Duration(milliseconds: 650)) {
+        _lastOcrAt = now;
+        final recognizedText = await _textRecognizer.processImage(inputImage);
+        final vin = _extractVin(_recognizedTextToSearchText(recognizedText));
+        if (vin != null) {
+          await _confirmRead(vin, 'VIN OCR');
+        }
+      }
+    } catch (_) {
+      // Bad camera frames are ignored; the next frame will be analyzed.
+    } finally {
+      _isAnalyzing = false;
     }
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('Skanowanie kodu')),
-        body: Stack(children: [
-          MobileScanner(
-            onDetect: (capture) {
-              for (final barcode in capture.barcodes) {
-                final value = barcode.rawValue;
-                if (value != null && value.trim().isNotEmpty) {
-                  Navigator.of(context).pop(ScanResult(value.trim().toUpperCase(), _type(barcode)));
-                  break;
-                }
-              }
-            },
-          ),
+  Widget build(BuildContext context) {
+    final controller = _cameraController;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Skanowanie')),
+      body: Stack(
+        children: [
+          if (_isInitializing)
+            const Center(child: CircularProgressIndicator())
+          else if (_error != null)
+            Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_error!)))
+          else if (controller != null && controller.value.isInitialized)
+            Positioned.fill(child: CameraPreview(controller)),
           const Align(
             alignment: Alignment.bottomCenter,
             child: Padding(
               padding: EdgeInsets.all(16),
-              child: Card(child: Padding(padding: EdgeInsets.all(12), child: Text('Skieruj aparat na QR, VIN, Code 128 lub GS1-128.'))),
+              child: Card(
+                child: Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Text(
+                    'Skieruj aparat na QR, Code 128, GS1-128, EAN-128 albo tekst VIN.',
+                  ),
+                ),
+              ),
             ),
           ),
-        ]),
-      );
+        ],
+      ),
+    );
+  }
 }
 
 class HistoryScreen extends StatefulWidget {

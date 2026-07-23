@@ -3,6 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../ocr/presentation/vin_scanner_screen.dart';
+
 class AddVehicleScreen extends StatefulWidget {
   const AddVehicleScreen({super.key});
 
@@ -18,6 +20,7 @@ class _AddVehicleScreenState extends State<AddVehicleScreen> {
   final _positionController = TextEditingController();
 
   bool _isSaving = false;
+  bool _isScanning = false;
   String? _errorMessage;
 
   @override
@@ -97,14 +100,41 @@ class _AddVehicleScreenState extends State<AddVehicleScreen> {
     }
   }
 
-  void _openVinScanner() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Skaner VIN zostanie podłączony w kolejnym kroku.')),
-    );
+  Future<void> _openVinScanner() async {
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _isScanning = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final vin = await Navigator.of(context).push<String>(
+        MaterialPageRoute(builder: (_) => const VinScannerScreen()),
+      );
+
+      if (!mounted || vin == null) return;
+
+      final normalizedVin = _normalizeVin(vin);
+      _vinController.value = TextEditingValue(
+        text: normalizedVin,
+        selection: TextSelection.collapsed(offset: normalizedVin.length),
+      );
+      _formKey.currentState?.validate();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('VIN został odczytany z aparatu.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isScanning = false);
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final isBusy = _isSaving || _isScanning;
+
     return Scaffold(
       appBar: AppBar(title: const Text('Dodaj pojazd')),
       body: SafeArea(
@@ -123,6 +153,7 @@ class _AddVehicleScreenState extends State<AddVehicleScreen> {
                       TextFormField(
                         controller: _vinController,
                         maxLength: 17,
+                        enabled: !isBusy,
                         textCapitalization: TextCapitalization.characters,
                         inputFormatters: [
                           FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
@@ -152,13 +183,22 @@ class _AddVehicleScreenState extends State<AddVehicleScreen> {
                       ),
                       const SizedBox(height: 8),
                       OutlinedButton.icon(
-                        onPressed: _isSaving ? null : _openVinScanner,
-                        icon: const Icon(Icons.camera_alt_outlined),
-                        label: const Text('Skanuj VIN aparatem'),
+                        onPressed: isBusy ? null : _openVinScanner,
+                        icon: _isScanning
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.camera_alt_outlined),
+                        label: Text(
+                          _isScanning ? 'Otwieranie aparatu...' : 'Skanuj VIN aparatem',
+                        ),
                       ),
                       const SizedBox(height: 20),
                       TextFormField(
                         controller: _positionController,
+                        enabled: !isBusy,
                         textInputAction: TextInputAction.done,
                         onFieldSubmitted: (_) => _isSaving ? null : _saveVehicle(),
                         decoration: const InputDecoration(
@@ -183,7 +223,7 @@ class _AddVehicleScreenState extends State<AddVehicleScreen> {
                       ],
                       const SizedBox(height: 24),
                       FilledButton.icon(
-                        onPressed: _isSaving ? null : _saveVehicle,
+                        onPressed: isBusy ? null : _saveVehicle,
                         icon: _isSaving
                             ? const SizedBox(
                                 width: 20,

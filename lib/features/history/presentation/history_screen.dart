@@ -40,65 +40,65 @@ class _HistoryScreenState extends State<HistoryScreen> {
         .orderBy('endedAt', descending: true)
         .snapshots();
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Historia pojazdów')),
-      body: SafeArea(
-        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: historyStream,
-          builder: (context, snapshot) {
-            if (snapshot.hasError) {
-              return const _HistoryMessage(
-                icon: Icons.error_outline,
-                title: 'Nie udało się pobrać historii',
-                message: 'Sprawdź połączenie i uprawnienia Firestore.',
-              );
-            }
+    return SafeArea(
+      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: historyStream,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return const _HistoryMessage(
+              icon: Icons.error_outline,
+              title: 'Nie udało się pobrać historii',
+              message: 'Sprawdź połączenie i uprawnienia Firestore.',
+            );
+          }
 
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
 
-            final allItems = snapshot.data?.docs ?? [];
-            final visibleItems = allItems.where((document) {
-              final data = document.data();
-              final vin = (data['vin'] as String? ?? '').toUpperCase();
-              final position = (data['position'] as String? ?? '').toUpperCase();
-              final onTime = data['onTime'] as bool? ?? false;
+          final allItems = snapshot.data?.docs ?? [];
+          final visibleItems = allItems.where((document) {
+            final data = document.data();
+            final vin = (data['vin'] as String? ?? '').toUpperCase();
+            final position = (data['position'] as String? ?? '').toUpperCase();
+            final onTime = data['onTime'] as bool? ?? false;
 
-              final matchesQuery = _query.isEmpty ||
-                  vin.contains(_query) ||
-                  position.contains(_query);
-              final matchesStatus = switch (_statusFilter) {
-                HistoryStatusFilter.all => true,
-                HistoryStatusFilter.onTime => onTime,
-                HistoryStatusFilter.late => !onTime,
-              };
+            final matchesQuery = _query.isEmpty ||
+                vin.contains(_query) ||
+                position.contains(_query);
+            final matchesStatus = switch (_statusFilter) {
+              HistoryStatusFilter.all => true,
+              HistoryStatusFilter.onTime => onTime,
+              HistoryStatusFilter.late => !onTime,
+            };
 
-              return matchesQuery && matchesStatus;
-            }).toList();
+            return matchesQuery && matchesStatus;
+          }).toList();
 
-            return ListView(
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: const EdgeInsets.all(16),
-              children: [
-                TextField(
-                  controller: _searchController,
-                  textInputAction: TextInputAction.search,
-                  decoration: InputDecoration(
-                    labelText: 'Szukaj po VIN lub pozycji',
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _query.isEmpty
-                        ? null
-                        : IconButton(
-                            tooltip: 'Wyczyść',
-                            onPressed: _searchController.clear,
-                            icon: const Icon(Icons.clear),
-                          ),
-                    border: const OutlineInputBorder(),
-                  ),
+          return ListView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.all(16),
+            children: [
+              TextField(
+                controller: _searchController,
+                textInputAction: TextInputAction.search,
+                decoration: InputDecoration(
+                  labelText: 'Szukaj po VIN lub pozycji',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'Wyczyść',
+                          onPressed: _searchController.clear,
+                          icon: const Icon(Icons.clear),
+                        ),
+                  border: const OutlineInputBorder(),
                 ),
-                const SizedBox(height: 12),
-                SegmentedButton<HistoryStatusFilter>(
+              ),
+              const SizedBox(height: 12),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SegmentedButton<HistoryStatusFilter>(
                   segments: const [
                     ButtonSegment(
                       value: HistoryStatusFilter.all,
@@ -121,38 +121,38 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     setState(() => _statusFilter = selection.first);
                   },
                 ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Rekordy: ${allItems.length}',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    Text('Widoczne: ${visibleItems.length}'),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                if (allItems.isEmpty)
-                  const _HistoryMessage(
-                    icon: Icons.history,
-                    title: 'Historia jest pusta',
-                    message: 'Zakończony pojazd pojawi się tutaj automatycznie.',
-                  )
-                else if (visibleItems.isEmpty)
-                  const _HistoryMessage(
-                    icon: Icons.search_off,
-                    title: 'Brak wyników',
-                    message: 'Zmień wyszukiwanie lub wybrany filtr.',
-                  )
-                else
-                  ...visibleItems.map(
-                    (document) => _HistoryCard(data: document.data()),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Rekordy: ${allItems.length}',
+                    style: Theme.of(context).textTheme.titleMedium,
                   ),
-              ],
-            );
-          },
-        ),
+                  Text('Widoczne: ${visibleItems.length}'),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (allItems.isEmpty)
+                const _HistoryMessage(
+                  icon: Icons.history,
+                  title: 'Historia jest pusta',
+                  message: 'Zakończony pojazd pojawi się tutaj automatycznie.',
+                )
+              else if (visibleItems.isEmpty)
+                const _HistoryMessage(
+                  icon: Icons.search_off,
+                  title: 'Brak wyników',
+                  message: 'Zmień wyszukiwanie lub wybrany filtr.',
+                )
+              else
+                ...visibleItems.map(
+                  (document) => _HistoryCard(data: document.data()),
+                ),
+            ],
+          );
+        },
       ),
     );
   }

@@ -124,99 +124,90 @@ class _ActiveVehiclesScreenState extends State<ActiveVehiclesScreen> {
         .orderBy('startedAt', descending: false)
         .snapshots();
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Aktywne pojazdy'),
-        actions: [
-          IconButton(
-            tooltip: 'Wyloguj',
-            onPressed: () => FirebaseAuth.instance.signOut(),
-            icon: const Icon(Icons.logout),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: vehiclesStream,
-          builder: (context, snapshot) {
-            if (snapshot.hasError) {
-              return const _MessageView(
-                icon: Icons.error_outline,
-                title: 'Nie udało się pobrać pojazdów',
-                message: 'Sprawdź połączenie i uprawnienia Firestore.',
-              );
-            }
-
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-
-            final allVehicles = snapshot.data?.docs ?? [];
-            final filteredVehicles = allVehicles.where((document) {
-              if (_query.isEmpty) return true;
-              final data = document.data();
-              final vin = (data['vin'] as String? ?? '').toUpperCase();
-              final position = (data['position'] as String? ?? '').toUpperCase();
-              return vin.contains(_query) || position.contains(_query);
-            }).toList();
-
-            return ListView(
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: const EdgeInsets.all(16),
-              children: [
-                TextField(
-                  controller: _searchController,
-                  textInputAction: TextInputAction.search,
-                  decoration: InputDecoration(
-                    labelText: 'Szukaj po VIN lub pozycji',
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _query.isEmpty
-                        ? null
-                        : IconButton(
-                            tooltip: 'Wyczyść',
-                            onPressed: _searchController.clear,
-                            icon: const Icon(Icons.clear),
-                          ),
-                    border: const OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Aktywne: ${allVehicles.length}/100',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    if (_query.isNotEmpty)
-                      Text('Wyniki: ${filteredVehicles.length}'),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                if (allVehicles.isEmpty)
-                  const _MessageView(
-                    icon: Icons.directions_car_outlined,
-                    title: 'Brak aktywnych pojazdów',
-                    message: 'Użyj zakładki Dodaj, aby uruchomić licznik 40 minut.',
-                  )
-                else if (filteredVehicles.isEmpty)
-                  const _MessageView(
-                    icon: Icons.search_off,
-                    title: 'Brak wyników',
-                    message: 'Nie znaleziono pojazdu pasującego do wyszukiwania.',
-                  )
-                else
-                  ...filteredVehicles.map(
-                    (document) => _VehicleCard(
-                      vehicle: document,
-                      isFinishing: _finishingVehicleIds.contains(document.id),
-                      onFinish: () => _finishVehicle(document),
-                    ),
-                  ),
-              ],
+    return SafeArea(
+      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: vehiclesStream,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return const _MessageView(
+              icon: Icons.error_outline,
+              title: 'Nie udało się pobrać pojazdów',
+              message: 'Sprawdź połączenie i uprawnienia Firestore.',
             );
-          },
-        ),
+          }
+
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final allVehicles = snapshot.data?.docs ?? [];
+          final filteredVehicles = allVehicles.where((document) {
+            if (_query.isEmpty) return true;
+            final data = document.data();
+            final vin = (data['vin'] as String? ?? '').toUpperCase();
+            final position =
+                (data['position'] as String? ?? '').toUpperCase();
+            return vin.contains(_query) || position.contains(_query);
+          }).toList();
+
+          return ListView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.all(16),
+            children: [
+              TextField(
+                controller: _searchController,
+                textInputAction: TextInputAction.search,
+                decoration: InputDecoration(
+                  labelText: 'Szukaj po VIN lub pozycji',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'Wyczyść',
+                          onPressed: _searchController.clear,
+                          icon: const Icon(Icons.clear),
+                        ),
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Aktywne: ${allVehicles.length}/100',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  if (_query.isNotEmpty)
+                    Text('Wyniki: ${filteredVehicles.length}'),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (allVehicles.isEmpty)
+                const _MessageView(
+                  icon: Icons.directions_car_outlined,
+                  title: 'Brak aktywnych pojazdów',
+                  message:
+                      'Użyj zakładki Dodaj, aby uruchomić licznik 40 minut.',
+                )
+              else if (filteredVehicles.isEmpty)
+                const _MessageView(
+                  icon: Icons.search_off,
+                  title: 'Brak wyników',
+                  message:
+                      'Nie znaleziono pojazdu pasującego do wyszukiwania.',
+                )
+              else
+                ...filteredVehicles.map(
+                  (document) => _VehicleCard(
+                    vehicle: document,
+                    isFinishing: _finishingVehicleIds.contains(document.id),
+                    onFinish: () => _finishVehicle(document),
+                  ),
+                ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -246,9 +237,11 @@ class _VehicleCard extends StatelessWidget {
             ? Duration.zero
             : DateTime.now().difference(startedAt);
 
+    final limitMinutes = data['limitMinutes'] as int? ?? 40;
+    final warningMinutes = limitMinutes > 5 ? limitMinutes - 5 : limitMinutes;
     final elapsedMinutes = elapsed.inMinutes;
-    final isAlarm = elapsedMinutes >= 40;
-    final isWarning = elapsedMinutes >= 35;
+    final isAlarm = elapsedMinutes >= limitMinutes;
+    final isWarning = elapsedMinutes >= warningMinutes;
     final colorScheme = Theme.of(context).colorScheme;
     final statusColor = isAlarm
         ? colorScheme.error
@@ -256,7 +249,7 @@ class _VehicleCard extends StatelessWidget {
             ? colorScheme.tertiary
             : colorScheme.primary;
     final statusText = isAlarm
-        ? 'Przekroczono 40 minut'
+        ? 'Przekroczono $limitMinutes minut'
         : isWarning
             ? 'Zbliża się limit'
             : 'W trakcie';
@@ -294,11 +287,13 @@ class _VehicleCard extends StatelessWidget {
               children: [
                 Icon(Icons.timer_outlined, size: 18, color: statusColor),
                 const SizedBox(width: 6),
-                Text(
-                  statusText,
-                  style: TextStyle(
-                    color: statusColor,
-                    fontWeight: FontWeight.w600,
+                Expanded(
+                  child: Text(
+                    statusText,
+                    style: TextStyle(
+                      color: statusColor,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
@@ -349,9 +344,11 @@ class _MessageView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
+      margin: const EdgeInsets.all(16),
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(icon, size: 56),
             const SizedBox(height: 12),

@@ -1,16 +1,30 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:camera/camera.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:excel/excel.dart' as xls;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+import 'package:flutter_timezone/flutter_timezone.dart';
+import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart' as mlkit;
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+ main
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -29,11 +43,19 @@ final ValueNotifier<bool> _firebaseReady = ValueNotifier<bool>(false);
 
 const AndroidNotificationChannel _vehicleOperationsChannel =
     AndroidNotificationChannel(
+codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+  'operation_alerts_v2',
+
   'vehicle_operations',
+ main
   'Operacje pojazdów',
   description: 'Powiadomienia o zakończeniu ładowania i obsługi',
   importance: Importance.max,
   playSound: true,
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+  enableVibration: true,
+
+ main
 );
 
 void main() {
@@ -62,7 +84,12 @@ Future<void> _initializeAppServices() async {
 
 Future<void> _initializeNotifications() async {
   tz.initializeTimeZones();
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+  final timezoneName = await FlutterTimezone.getLocalTimezone();
+  tz.setLocalLocation(tz.getLocation(timezoneName));
+
   tz.setLocalLocation(tz.local);
+ main
   const android = AndroidInitializationSettings('@mipmap/ic_launcher');
   const ios = DarwinInitializationSettings();
   await _notifications.initialize(
@@ -82,6 +109,14 @@ Future<void> _scheduleNotification(
   int id,
   DateTime scheduledAt,
 ) async {
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+  final androidNotifications = _notifications
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+  final canScheduleExact =
+      await androidNotifications?.canScheduleExactNotifications() ?? false;
+
+ main
   await _notifications.zonedSchedule(
     id,
     title,
@@ -89,6 +124,24 @@ Future<void> _scheduleNotification(
     tz.TZDateTime.from(scheduledAt, tz.local),
     const NotificationDetails(
       android: AndroidNotificationDetails(
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+        'operation_alerts_v2',
+        'Operacje pojazdów',
+        channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
+        importance: Importance.max,
+        priority: Priority.max,
+        playSound: true,
+        enableVibration: true,
+        channelShowBadge: true,
+        visibility: NotificationVisibility.public,
+        audioAttributesUsage: AudioAttributesUsage.notification,
+      ),
+      iOS: DarwinNotificationDetails(presentSound: true),
+    ),
+    androidScheduleMode: canScheduleExact
+        ? AndroidScheduleMode.exactAllowWhileIdle
+        : AndroidScheduleMode.inexactAllowWhileIdle,
+
         'vehicle_operations',
         'Operacje pojazdów',
         channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
@@ -100,6 +153,7 @@ Future<void> _scheduleNotification(
       iOS: DarwinNotificationDetails(presentSound: true),
     ),
     androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+ main
     uiLocalNotificationDateInterpretation:
         UILocalNotificationDateInterpretation.absoluteTime,
   );
@@ -118,13 +172,20 @@ Future<void> _cancelOperationNotifications(Map<String, dynamic> operation) async
 
 Future<void> _showNotification(String title, String body, int id) async {
   const android = AndroidNotificationDetails(
-    'vehicle_operations',
+    'operation_alerts_v2',
     'Operacje pojazdów',
     channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
     importance: Importance.max,
-    priority: Priority.high,
+    priority: Priority.max,
     playSound: true,
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+    enableVibration: true,
     channelShowBadge: true,
+    visibility: NotificationVisibility.public,
+    audioAttributesUsage: AudioAttributesUsage.notification,
+
+    channelShowBadge: true,
+ main
   );
   const ios = DarwinNotificationDetails(presentSound: true);
   await _notifications.show(
@@ -626,12 +687,29 @@ class _OperationScreenState extends State<OperationScreen> {
     return '$sign${(seconds ~/ 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
   }
 
+  Future<void> _testNotificationSound() async {
+    await _showNotification(
+      'Test powiadomienia',
+      'Test powiadomienia',
+      900001,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final activeOperations = _activeOperations;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: _testNotificationSound,
+            icon: const Icon(Icons.notifications_active),
+            label: const Text('Test dźwięku'),
+          ),
+        ),
+        const SizedBox(height: 8),
         if (_stage == StepStage.location) ...[
           Text(
             'Etap 1 — lokalizacja pojazdu',
@@ -765,6 +843,20 @@ class ScannerScreen extends StatefulWidget {
 }
 
 class _ScannerScreenState extends State<ScannerScreen> {
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+  final mlkit.BarcodeScanner _barcodeScanner = mlkit.BarcodeScanner(
+    formats: [mlkit.BarcodeFormat.qrCode, mlkit.BarcodeFormat.code128],
+  );
+  final TextRecognizer _textRecognizer = TextRecognizer();
+  CameraController? _cameraController;
+  DateTime _lastOcrAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastReadAt = DateTime.fromMillisecondsSinceEpoch(0);
+  String? _lastReadValue;
+  bool _isInitializing = true;
+  bool _isAnalyzing = false;
+  bool _isConfirming = false;
+  String? _error;
+
   final MobileScannerController _controller = MobileScannerController(
     formats: const [BarcodeFormat.qrCode, BarcodeFormat.code128],
     returnImage: true,
@@ -774,16 +866,86 @@ class _ScannerScreenState extends State<ScannerScreen> {
   String? _lastReadValue;
   bool _isConfirming = false;
   bool _isProcessingText = false;
+ main
 
   static final RegExp _vinPattern = RegExp(r'[A-HJ-NPR-Z0-9]{17}');
 
   @override
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+  void initState() {
+    super.initState();
+    unawaited(_initializeCamera());
+  }
+
+  @override
+  void dispose() {
+    unawaited(_stopCamera());
+    _barcodeScanner.close();
+
   void dispose() {
     _controller.dispose();
+ main
     _textRecognizer.close();
     super.dispose();
   }
 
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+  Future<void> _initializeCamera() async {
+    try {
+      final cameras = await availableCameras();
+      final camera = cameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+      final controller = CameraController(
+        camera,
+        ResolutionPreset.medium,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420,
+      );
+      await controller.initialize();
+      await controller.startImageStream(_processFrame);
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _cameraController = controller;
+        _isInitializing = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isInitializing = false;
+        _error = 'Nie udało się uruchomić aparatu. Sprawdź uprawnienia.';
+      });
+    }
+  }
+
+  Future<void> _stopCamera() async {
+    final controller = _cameraController;
+    _cameraController = null;
+    if (controller == null) return;
+    if (controller.value.isStreamingImages) {
+      await controller.stopImageStream();
+    }
+    await controller.dispose();
+  }
+
+  String _normalizeVinText(String value) => value
+      .toUpperCase()
+      .replaceAll(RegExp(r'[\s\-\n\r]+'), '')
+      .replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
+  String? _extractVin(String value) =>
+      _vinPattern.firstMatch(_normalizeVinText(value))?.group(0);
+
+  String _readableBarcodeType(mlkit.Barcode barcode, String value) {
+    switch (barcode.format) {
+      case mlkit.BarcodeFormat.qrCode:
+        return _extractVin(value) == value ? 'VIN z QR' : 'QR';
+      case mlkit.BarcodeFormat.code128:
+=======
   String _normalizeVin(String value) =>
       value.replaceAll(RegExp(r'[\s-]+'), '').toUpperCase();
 
@@ -814,6 +976,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
       case BarcodeFormat.qrCode:
         return _extractVin(value) == value ? 'VIN z QR' : 'QR';
       case BarcodeFormat.code128:
+ main
         return _extractVin(value) == value
             ? 'VIN z Code 128 / GS1-128 / EAN-128'
             : 'Code 128 / GS1-128 / EAN-128';
@@ -822,6 +985,89 @@ class _ScannerScreenState extends State<ScannerScreen> {
     }
   }
 
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+  InputImageRotation _imageRotation(CameraDescription camera) {
+    final rotation = InputImageRotationValue.fromRawValue(camera.sensorOrientation);
+    return rotation ?? InputImageRotation.rotation0deg;
+  }
+
+  Uint8List _cameraImageToNv21(CameraImage image) {
+    if (image.planes.length == 1) return image.planes.first.bytes;
+
+    final yPlane = image.planes[0];
+    final uPlane = image.planes[1];
+    final vPlane = image.planes[2];
+    final width = image.width;
+    final height = image.height;
+    final bytes = Uint8List(width * height + (width * height ~/ 2));
+    var offset = 0;
+
+    for (var row = 0; row < height; row++) {
+      final rowStart = row * yPlane.bytesPerRow;
+      bytes.setRange(offset, offset + width, yPlane.bytes, rowStart);
+      offset += width;
+    }
+
+    final chromaHeight = height ~/ 2;
+    final chromaWidth = width ~/ 2;
+    for (var row = 0; row < chromaHeight; row++) {
+      for (var col = 0; col < chromaWidth; col++) {
+        final vuIndex = row * vPlane.bytesPerRow + col * vPlane.bytesPerPixel!;
+        final uvIndex = row * uPlane.bytesPerRow + col * uPlane.bytesPerPixel!;
+        bytes[offset++] = vPlane.bytes[vuIndex];
+        bytes[offset++] = uPlane.bytes[uvIndex];
+      }
+    }
+    return bytes;
+  }
+
+  InputImage _inputImageFromCameraImage(CameraImage image) {
+    final controller = _cameraController!;
+    return InputImage.fromBytes(
+      bytes: _cameraImageToNv21(image),
+      metadata: InputImageMetadata(
+        size: ui.Size(image.width.toDouble(), image.height.toDouble()),
+        rotation: _imageRotation(controller.description),
+        format: InputImageFormat.nv21,
+        bytesPerRow: image.width,
+      ),
+    );
+  }
+
+  String _recognizedTextToSearchText(RecognizedText recognizedText) {
+    final parts = <String>[recognizedText.text];
+    for (final block in recognizedText.blocks) {
+      parts.add(block.text);
+      for (final line in block.lines) {
+        parts.add(line.text);
+        for (final element in line.elements) {
+          parts.add(element.text);
+        }
+      }
+    }
+    return parts.join('\n');
+  }
+
+  bool _isDuplicateRead(String value) {
+    final now = DateTime.now();
+    final duplicate = _lastReadValue == value &&
+        now.difference(_lastReadAt) < const Duration(seconds: 3);
+    _lastReadValue = value;
+    _lastReadAt = now;
+    return duplicate;
+  }
+
+  Future<void> _confirmRead(String value, String type) async {
+    final normalizedValue = type == 'VIN OCR' ? _extractVin(value) : null;
+    final result = normalizedValue ?? value.trim().toUpperCase();
+    if (result.isEmpty || _isDuplicateRead(result) || _isConfirming) return;
+
+    _isConfirming = true;
+    final controller = _cameraController;
+    if (controller != null && controller.value.isStreamingImages) {
+      await controller.stopImageStream();
+    }
+
   Future<void> _confirmRead(String value, String type) async {
     final normalized = _extractVin(value) ?? value.trim().toUpperCase();
     if (normalized.isEmpty || _isDuplicateRead(normalized) || _isConfirming) {
@@ -829,12 +1075,17 @@ class _ScannerScreenState extends State<ScannerScreen> {
     }
     _isConfirming = true;
     await _controller.stop();
+ main
     if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+        title: Text('Odczytano: $result'),
+
         title: Text('Odczytano: $normalized'),
+ main
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -843,6 +1094,8 @@ class _ScannerScreenState extends State<ScannerScreen> {
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('Potwierdź'),
+ codex/napraw-powiadomienia-i-skanowanie-vin-g94wah
+
           ),
         ],
       ),
@@ -901,7 +1154,68 @@ class _ScannerScreenState extends State<ScannerScreen> {
           MobileScanner(
             controller: _controller,
             onDetect: _onDetect,
+ main
           ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (confirmed == true) {
+      Navigator.of(context).pop(ScanResult(result, type));
+      return;
+    }
+
+    _lastReadValue = null;
+    _isConfirming = false;
+    final currentController = _cameraController;
+    if (currentController != null && !currentController.value.isStreamingImages) {
+      await currentController.startImageStream(_processFrame);
+    }
+  }
+
+  Future<void> _processFrame(CameraImage image) async {
+    if (_isAnalyzing || _isConfirming || _cameraController == null) return;
+    _isAnalyzing = true;
+    try {
+      final inputImage = _inputImageFromCameraImage(image);
+      final barcodes = await _barcodeScanner.processImage(inputImage);
+      for (final barcode in barcodes) {
+        final value = barcode.rawValue;
+        if (value != null && value.trim().isNotEmpty) {
+          await _confirmRead(value, _readableBarcodeType(barcode, value));
+          return;
+        }
+      }
+
+      final now = DateTime.now();
+      if (now.difference(_lastOcrAt) >= const Duration(milliseconds: 650)) {
+        _lastOcrAt = now;
+        final recognizedText = await _textRecognizer.processImage(inputImage);
+        final vin = _extractVin(_recognizedTextToSearchText(recognizedText));
+        if (vin != null) {
+          await _confirmRead(vin, 'VIN OCR');
+        }
+      }
+    } catch (_) {
+      // Bad camera frames are ignored; the next frame will be analyzed.
+    } finally {
+      _isAnalyzing = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = _cameraController;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Skanowanie')),
+      body: Stack(
+        children: [
+          if (_isInitializing)
+            const Center(child: CircularProgressIndicator())
+          else if (_error != null)
+            Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_error!)))
+          else if (controller != null && controller.value.isInitialized)
+            Positioned.fill(child: CameraPreview(controller)),
           const Align(
             alignment: Alignment.bottomCenter,
             child: Padding(
@@ -916,8 +1230,10 @@ class _ScannerScreenState extends State<ScannerScreen> {
               ),
             ),
           ),
-        ]),
-      );
+        ],
+      ),
+    );
+  }
 }
 
 class HistoryScreen extends StatefulWidget {

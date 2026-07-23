@@ -29,7 +29,7 @@ final ValueNotifier<bool> _firebaseReady = ValueNotifier<bool>(false);
 
 const AndroidNotificationChannel _vehicleOperationsChannel =
     AndroidNotificationChannel(
-  'vehicle_operations',
+  'vehicle_operations_v2',
   'Operacje pojazdów',
   description: 'Powiadomienia o zakończeniu ładowania i obsługi',
   importance: Importance.max,
@@ -89,7 +89,7 @@ Future<void> _scheduleNotification(
     tz.TZDateTime.from(scheduledAt, tz.local),
     const NotificationDetails(
       android: AndroidNotificationDetails(
-        'vehicle_operations',
+        'vehicle_operations_v2',
         'Operacje pojazdów',
         channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
         importance: Importance.max,
@@ -118,7 +118,7 @@ Future<void> _cancelOperationNotifications(Map<String, dynamic> operation) async
 
 Future<void> _showNotification(String title, String body, int id) async {
   const android = AndroidNotificationDetails(
-    'vehicle_operations',
+    'vehicle_operations_v2',
     'Operacje pojazdów',
     channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
     importance: Importance.max,
@@ -488,6 +488,15 @@ class _OperationScreenState extends State<OperationScreen> {
     });
   }
 
+  Future<void> _testNotificationSound() async {
+    final id = DateTime.now().millisecondsSinceEpoch & 0x3fffffff;
+    await _showNotification(
+      'Test dźwięku',
+      'To jest test powiadomienia w kanale vehicle_operations_v2.',
+      id,
+    );
+  }
+
   Future<void> _scanCode() async {
     final result = await Navigator.of(context).push<ScanResult>(
       MaterialPageRoute(builder: (_) => const ScannerScreen()),
@@ -663,6 +672,12 @@ class _OperationScreenState extends State<OperationScreen> {
             icon: const Icon(Icons.qr_code_scanner),
             label: const Text('Skanuj'),
           ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _testNotificationSound,
+            icon: const Icon(Icons.notifications_active),
+            label: const Text('Test dźwięku'),
+          ),
           const SizedBox(height: 12),
           TextField(
             controller: _manualCodeController,
@@ -771,6 +786,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
   );
   final TextRecognizer _textRecognizer = TextRecognizer();
   DateTime _lastReadAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastOcrAt = DateTime.fromMillisecondsSinceEpoch(0);
   String? _lastReadValue;
   bool _isConfirming = false;
   bool _isProcessingText = false;
@@ -858,27 +874,48 @@ class _ScannerScreenState extends State<ScannerScreen> {
   }
 
   Future<void> _readText(BarcodeCapture capture) async {
-    if (_isProcessingText || _isConfirming || capture.image == null) return;
+    final imageBytes = capture.image;
+    final now = DateTime.now();
+    if (_isProcessingText ||
+        _isConfirming ||
+        imageBytes == null ||
+        now.difference(_lastOcrAt) < const Duration(seconds: 2)) {
+      return;
+    }
+
+    _lastOcrAt = now;
     _isProcessingText = true;
+    File? temporaryImage;
     try {
-      final size = MediaQuery.sizeOf(context);
-      final inputImage = InputImage.fromBytes(
-        bytes: capture.image!,
-        metadata: InputImageMetadata(
-          size: Size(size.width, size.height),
-          rotation: InputImageRotation.rotation0deg,
-          format: InputImageFormat.nv21,
-          bytesPerRow: size.width.toInt(),
-        ),
+      final tempDirectory = await getTemporaryDirectory();
+      temporaryImage = File(
+        '${tempDirectory.path}/vin_ocr_${now.microsecondsSinceEpoch}.jpg',
       );
+      await temporaryImage.writeAsBytes(imageBytes, flush: true);
+
+      final inputImage = InputImage.fromFilePath(temporaryImage.path);
       final text = await _textRecognizer.processImage(inputImage);
       final vin = _extractVin(text.text);
       if (vin != null) {
         await _confirmRead(vin, 'VIN OCR');
       }
-    } catch (_) {
-      // OCR frames that cannot be decoded by ML Kit are ignored; barcode scanning continues.
+    } catch (error, stackTrace) {
+      assert(() {
+        debugPrint('Błąd OCR VIN: $error');
+        debugPrintStack(stackTrace: stackTrace);
+        return true;
+      }());
     } finally {
+      try {
+        if (temporaryImage != null && await temporaryImage.exists()) {
+          await temporaryImage.delete();
+        }
+      } catch (error) {
+        assert(() {
+          debugPrint('Nie udało się usunąć tymczasowego pliku OCR: $error');
+          return true;
+        }());
+      }
       _isProcessingText = false;
     }
   }

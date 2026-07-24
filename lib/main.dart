@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:camera/camera.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:excel/excel.dart' as xls;
@@ -11,7 +12,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tz;
@@ -29,9 +29,9 @@ final ValueNotifier<bool> _firebaseReady = ValueNotifier<bool>(false);
 
 const AndroidNotificationChannel _vehicleOperationsChannel =
     AndroidNotificationChannel(
-  'vehicle_operations_v2',
-  'Operacje pojazdów',
-  description: 'Powiadomienia o zakończeniu ładowania i obsługi',
+  'vehicle_operations_v4',
+  'Operacje pojazdów WEGA',
+  description: 'Powiadomienia WEGA',
   importance: Importance.max,
   playSound: true,
 );
@@ -76,12 +76,17 @@ Future<void> _initializeNotifications() async {
   await androidNotifications?.requestExactAlarmsPermission();
 }
 
+Future<void> _ensureNotificationsReady() async {
+  await _initializeNotifications();
+}
+
 Future<void> _scheduleNotification(
   String title,
   String body,
   int id,
   DateTime scheduledAt,
 ) async {
+  await _ensureNotificationsReady();
   await _notifications.zonedSchedule(
     id,
     title,
@@ -89,9 +94,9 @@ Future<void> _scheduleNotification(
     tz.TZDateTime.from(scheduledAt, tz.local),
     const NotificationDetails(
       android: AndroidNotificationDetails(
-        'vehicle_operations_v2',
-        'Operacje pojazdów',
-        channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
+        'vehicle_operations_v4',
+        'Operacje pojazdów WEGA',
+        channelDescription: 'Powiadomienia WEGA',
         importance: Importance.max,
         priority: Priority.high,
         playSound: true,
@@ -117,10 +122,11 @@ Future<void> _cancelOperationNotifications(Map<String, dynamic> operation) async
 }
 
 Future<void> _showNotification(String title, String body, int id) async {
+  await _ensureNotificationsReady();
   const android = AndroidNotificationDetails(
-    'vehicle_operations_v2',
-    'Operacje pojazdów',
-    channelDescription: 'Powiadomienia o zakończeniu ładowania i obsługi',
+    'vehicle_operations_v4',
+    'Operacje pojazdów WEGA',
+    channelDescription: 'Powiadomienia WEGA',
     importance: Importance.max,
     priority: Priority.high,
     playSound: true,
@@ -489,17 +495,29 @@ class _OperationScreenState extends State<OperationScreen> {
   }
 
   Future<void> _testNotificationSound() async {
-    final id = DateTime.now().millisecondsSinceEpoch & 0x3fffffff;
-    await _showNotification(
-      'Test dźwięku',
-      'To jest test powiadomienia w kanale vehicle_operations_v2.',
-      id,
-    );
+    try {
+      await _ensureNotificationsReady();
+      final id = DateTime.now().millisecondsSinceEpoch & 0x3fffffff;
+      await _showNotification(
+        'Test dźwięku WEGA',
+        'Domyślny dźwięk Androida w kanale vehicle_operations_v4.',
+        id,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Powiadomienie testowe WEGA wysłane.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Błąd testu powiadomień WEGA: $error')),
+      );
+    }
   }
 
-  Future<void> _scanCode() async {
+  Future<void> _scanCode(ScanMode mode) async {
     final result = await Navigator.of(context).push<ScanResult>(
-      MaterialPageRoute(builder: (_) => const ScannerScreen()),
+      MaterialPageRoute(builder: (_) => ScannerScreen(mode: mode)),
     );
     if (result != null) {
       setState(() {
@@ -668,15 +686,27 @@ class _OperationScreenState extends State<OperationScreen> {
           Text('Lokalizacja: ${_locationController.text.trim()}'),
           const SizedBox(height: 12),
           FilledButton.icon(
-            onPressed: _scanCode,
+            onPressed: () => _scanCode(ScanMode.vin),
+            icon: const Icon(Icons.directions_car),
+            label: const Text('Skanuj VIN'),
+          ),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            onPressed: () => _scanCode(ScanMode.qr),
             icon: const Icon(Icons.qr_code_scanner),
-            label: const Text('Skanuj'),
+            label: const Text('Skanuj QR'),
+          ),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            onPressed: () => _scanCode(ScanMode.ean128),
+            icon: const Icon(Icons.view_week),
+            label: const Text('Skanuj EAN-128'),
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
             onPressed: _testNotificationSound,
             icon: const Icon(Icons.notifications_active),
-            label: const Text('Test dźwięku'),
+            label: const Text('Test dźwięku WEGA'),
           ),
           const SizedBox(height: 12),
           TextField(
@@ -772,48 +802,83 @@ class ScanResult {
   final String type;
 }
 
+enum ScanMode { vin, qr, ean128 }
+
+String normalizeVin(String value) =>
+    value.replaceAll(RegExp(r'[\s-]+'), '').toUpperCase();
+
+bool isValidVin(String value) =>
+    RegExp(r'^[A-HJ-NPR-Z0-9]{17}$').hasMatch(normalizeVin(value));
+
+String? extractVin(String value) {
+  final normalized = normalizeVin(value);
+  if (isValidVin(normalized)) return normalized;
+  final match = RegExp(r'[A-Z0-9]{17}').firstMatch(normalized);
+  if (match == null) return null;
+  final vin = match.group(0)!;
+  return isValidVin(vin) ? vin : null;
+}
+
 class ScannerScreen extends StatefulWidget {
-  const ScannerScreen({super.key});
+  const ScannerScreen({super.key, required this.mode});
+  final ScanMode mode;
 
   @override
   State<ScannerScreen> createState() => _ScannerScreenState();
 }
 
 class _ScannerScreenState extends State<ScannerScreen> {
-  final MobileScannerController _controller = MobileScannerController(
-    formats: const [BarcodeFormat.qrCode, BarcodeFormat.code128],
-    returnImage: true,
-  );
+  MobileScannerController? _mobileController;
+  CameraController? _cameraController;
   final TextRecognizer _textRecognizer = TextRecognizer();
-  DateTime _lastReadAt = DateTime.fromMillisecondsSinceEpoch(0);
-  DateTime _lastOcrAt = DateTime.fromMillisecondsSinceEpoch(0);
-  String? _lastReadValue;
   bool _isConfirming = false;
-  bool _isProcessingText = false;
+  bool _isProcessing = false;
+  String? _lastReadValue;
+  DateTime _lastReadAt = DateTime.fromMillisecondsSinceEpoch(0);
 
-  static final RegExp _vinPattern = RegExp(r'[A-HJ-NPR-Z0-9]{17}');
+  @override
+  void initState() {
+    super.initState();
+    if (widget.mode == ScanMode.vin) {
+      unawaited(_initializeCamera());
+    } else {
+      _mobileController = MobileScannerController(
+        formats: [
+          widget.mode == ScanMode.qr
+              ? BarcodeFormat.qrCode
+              : BarcodeFormat.code128,
+        ],
+      );
+    }
+  }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _mobileController?.dispose();
+    _cameraController?.dispose();
     _textRecognizer.close();
     super.dispose();
   }
 
-  String _normalizeVin(String value) =>
-      value.replaceAll(RegExp(r'[\s-]+'), '').toUpperCase();
-
-  String? _extractVin(String value) {
-    final normalized = _normalizeVin(value);
-    final directMatch = _vinPattern.firstMatch(normalized);
-    if (directMatch != null) return directMatch.group(0);
-
-    final joined = value
-        .split(RegExp(r'\s+'))
-        .map(_normalizeVin)
-        .where((part) => part.isNotEmpty)
-        .join();
-    return _vinPattern.firstMatch(joined)?.group(0);
+  Future<void> _initializeCamera() async {
+    final cameras = await availableCameras();
+    if (!mounted || cameras.isEmpty) return;
+    final backCameras = cameras.where(
+      (camera) => camera.lensDirection == CameraLensDirection.back,
+    );
+    final backCamera =
+        backCameras.isNotEmpty ? backCameras.first : cameras.first;
+    final controller = CameraController(
+      backCamera,
+      ResolutionPreset.high,
+      enableAudio: false,
+    );
+    await controller.initialize();
+    if (!mounted) {
+      await controller.dispose();
+      return;
+    }
+    setState(() => _cameraController = controller);
   }
 
   bool _isDuplicateRead(String value) {
@@ -825,32 +890,17 @@ class _ScannerScreenState extends State<ScannerScreen> {
     return duplicate;
   }
 
-  String _type(Barcode barcode, String value) {
-    switch (barcode.format) {
-      case BarcodeFormat.qrCode:
-        return _extractVin(value) == value ? 'VIN z QR' : 'QR';
-      case BarcodeFormat.code128:
-        return _extractVin(value) == value
-            ? 'VIN z Code 128 / GS1-128 / EAN-128'
-            : 'Code 128 / GS1-128 / EAN-128';
-      default:
-        return _extractVin(value) == value ? 'VIN' : barcode.format.name;
-    }
-  }
-
-  Future<void> _confirmRead(String value, String type) async {
-    final normalized = _extractVin(value) ?? value.trim().toUpperCase();
-    if (normalized.isEmpty || _isDuplicateRead(normalized) || _isConfirming) {
-      return;
+  Future<bool> _confirmRead(String value, String type) async {
+    if (value.trim().isEmpty || _isDuplicateRead(value) || _isConfirming) {
+      return false;
     }
     _isConfirming = true;
-    await _controller.stop();
-    if (!mounted) return;
+    await _mobileController?.stop();
     final confirmed = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
-        title: Text('Odczytano: $normalized'),
+        title: Text('Odczytano: $value'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -863,98 +913,118 @@ class _ScannerScreenState extends State<ScannerScreen> {
         ],
       ),
     );
-    if (!mounted) return;
+    if (!mounted) return false;
     if (confirmed == true) {
-      Navigator.of(context).pop(ScanResult(normalized, type));
-      return;
+      Navigator.of(context).pop(ScanResult(value, type));
+      return true;
     }
     _isConfirming = false;
     _lastReadValue = null;
-    await _controller.start();
+    await _mobileController?.start();
+    return false;
   }
 
-  Future<void> _readText(BarcodeCapture capture) async {
-    final imageBytes = capture.image;
-    final now = DateTime.now();
-    if (_isProcessingText ||
-        _isConfirming ||
-        imageBytes == null ||
-        now.difference(_lastOcrAt) < const Duration(seconds: 2)) {
+  Future<void> _scanVinPhoto() async {
+    final controller = _cameraController;
+    if (controller == null ||
+        !controller.value.isInitialized ||
+        _isProcessing) {
       return;
     }
-
-    _lastOcrAt = now;
-    _isProcessingText = true;
-    File? temporaryImage;
+    setState(() => _isProcessing = true);
+    XFile? photo;
     try {
-      final tempDirectory = await getTemporaryDirectory();
-      temporaryImage = File(
-        '${tempDirectory.path}/vin_ocr_${now.microsecondsSinceEpoch}.jpg',
-      );
-      await temporaryImage.writeAsBytes(imageBytes, flush: true);
-
-      final inputImage = InputImage.fromFilePath(temporaryImage.path);
+      photo = await controller.takePicture();
+      final inputImage = InputImage.fromFilePath(photo.path);
       final text = await _textRecognizer.processImage(inputImage);
-      final vin = _extractVin(text.text);
-      if (vin != null) {
+      final vin = extractVin(text.text);
+      if (vin != null && mounted) {
         await _confirmRead(vin, 'VIN OCR');
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Nie odczytano prawidłowego VIN.')),
+        );
       }
-    } catch (error, stackTrace) {
-      assert(() {
-        debugPrint('Błąd OCR VIN: $error');
-        debugPrintStack(stackTrace: stackTrace);
-        return true;
-      }());
     } finally {
-      try {
-        if (temporaryImage != null && await temporaryImage.exists()) {
-          await temporaryImage.delete();
-        }
-      } catch (error) {
-        assert(() {
-          debugPrint('Nie udało się usunąć tymczasowego pliku OCR: $error');
-          return true;
-        }());
+      if (photo != null) {
+        final file = File(photo.path);
+        if (await file.exists()) await file.delete();
       }
-      _isProcessingText = false;
+      if (mounted) setState(() => _isProcessing = false);
     }
   }
 
   void _onDetect(BarcodeCapture capture) {
+    if (_isConfirming) return;
+    final expected = widget.mode == ScanMode.qr
+        ? BarcodeFormat.qrCode
+        : BarcodeFormat.code128;
     for (final barcode in capture.barcodes) {
-      final value = barcode.rawValue;
-      if (value != null && value.trim().isNotEmpty) {
-        unawaited(_confirmRead(value, _type(barcode, value)));
-        return;
-      }
+      if (barcode.format != expected) continue;
+      final value = barcode.rawValue?.trim();
+      if (value == null || value.isEmpty) continue;
+      final type = widget.mode == ScanMode.qr
+          ? 'QR'
+          : 'Code 128 / GS1-128 / EAN-128';
+      unawaited(_confirmRead(value, type));
+      return;
     }
-    unawaited(_readText(capture));
   }
+
+  String get _title => switch (widget.mode) {
+        ScanMode.vin => 'Skanuj VIN',
+        ScanMode.qr => 'Skanuj QR',
+        ScanMode.ean128 => 'Skanuj EAN-128',
+      };
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('Skanowanie')),
-        body: Stack(children: [
-          MobileScanner(
-            controller: _controller,
-            onDetect: _onDetect,
-          ),
-          const Align(
-            alignment: Alignment.bottomCenter,
-            child: Padding(
-              padding: EdgeInsets.all(16),
-              child: Card(
-                child: Padding(
-                  padding: EdgeInsets.all(12),
-                  child: Text(
-                    'Skieruj aparat na QR, Code 128, GS1-128, EAN-128 albo tekst VIN.',
-                  ),
+        appBar: AppBar(title: Text(_title)),
+        body: widget.mode == ScanMode.vin
+            ? _buildVinScanner()
+            : _buildBarcodeScanner(),
+      );
+
+  Widget _buildVinScanner() {
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return Column(children: [
+      Expanded(child: CameraPreview(controller)),
+      Padding(
+        padding: const EdgeInsets.all(16),
+        child: FilledButton.icon(
+          onPressed: _isProcessing ? null : _scanVinPhoto,
+          icon: const Icon(Icons.camera_alt),
+          label: const Text('Wykonaj zdjęcie VIN'),
+        ),
+      ),
+    ]);
+  }
+
+  Widget _buildBarcodeScanner() => Stack(children: [
+        MobileScanner(
+          controller: _mobileController!,
+          onDetect: _onDetect,
+        ),
+        Align(
+          alignment: Alignment.bottomCenter,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  widget.mode == ScanMode.qr
+                      ? 'Skieruj aparat wyłącznie na kod QR.'
+                      : 'Skieruj aparat wyłącznie na Code 128 / GS1-128 / EAN-128.',
                 ),
               ),
             ),
           ),
-        ]),
-      );
+        ),
+      ]);
 }
 
 class HistoryScreen extends StatefulWidget {

@@ -9,12 +9,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  camera: ^0.11.0+2
   firebase_core: ^3.15.2
   firebase_auth: ^5.7.0
   cloud_firestore: ^5.6.12
   firebase_messaging: ^15.2.10
   excel: ^4.0.6
-  path_provider: ^2.1.5
   share_plus: ^10.1.4
   mobile_scanner: ^6.0.2
   google_mlkit_text_recognition: ^0.13.1
